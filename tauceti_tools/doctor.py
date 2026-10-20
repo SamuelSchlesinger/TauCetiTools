@@ -197,6 +197,7 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
             ".github/CODEOWNERS",
             ".github/workflows/pr-build.yml",
             ".github/workflows/auto-merge.yml",
+            ".github/workflows/pr-status.yml",
         ):
             value, error = gh.read(f"repos/{repo}/contents/{path}?ref={project.branch}")
             status = "unknown" if error else "ready"
@@ -605,7 +606,7 @@ def extra_findings(project, gh, again):
         "claims": ("content", ["claims-access.yml"]),
         "docs": ("content", ["api-docs.yml", "pages.yml"]),
         "progress": ("roadmap", ["ci.yml", "progress-merge.yml"]),
-        "zulip": ("content", ["zulip-healthcheck.yml", "pr-status.yml"]),
+        "zulip": ("content", ["zulip-healthcheck.yml"]),
         "fleet": ("content", ["pick-runner.yml"]),
         "security_audit": ("content", ["nightly-verify.yml"]),
     }
