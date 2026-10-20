@@ -258,7 +258,7 @@ App manager. For a personal owner use `https://github.com/settings/apps/new`.
 
 | Role | Repository permissions | Install on | Webhook |
 |---|---|---|---|
-| Automation | Contents, pull requests, issues, checks, statuses, Actions and workflows: write; variables: read | Content; roadmap only if progress enabled | Inactive unless a selected feature needs it |
+| Automation | Contents, pull requests, issues, checks, statuses, Actions and workflows: write; variables: read | Content; roadmap if progress enabled; Data if CI review persistence enabled | Inactive unless a selected feature needs it |
 | Claims admission | Administration and contents: write | Claims repository only | Inactive |
 | Collector | Contents, Actions and pull requests: read | Configured source repositories | Inactive |
 | State mirror | Contents, issues, pull requests, checks, statuses and Actions: read | Enrolled content repository | State service endpoint |
