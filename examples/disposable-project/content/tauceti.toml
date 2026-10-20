@@ -82,7 +82,7 @@ mode = "off"
 
 [tools.tools]
 repo="TauCetiProject/TauCetiTools"
-ref="5d8bd99dabfbf0730e301825f378bbb0b93db25b"
+ref="4c54de2c219ff88229741c02faba876b8fa2b094"
 
 [tools.review]
 repo="TauCetiProject/TauCetiReview"
