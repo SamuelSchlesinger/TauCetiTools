@@ -19,6 +19,7 @@ export interface RepositoryStore {
   batch(statements:Statement[]):Promise<Rows<any>[]>;
   transaction<T>(apply:(store:RepositoryStore)=>Promise<T>):Promise<T>;
   health():Promise<Record<string,unknown>>;
+  prepareMonitoring?(analyzeTables:boolean,attemptToken?:number):Promise<any>;
 }
 export class SerialLane {
   private tail:Promise<unknown>=Promise.resolve();
@@ -213,12 +214,21 @@ export class PostgresStore implements RepositoryStore {
       }catch{}finally{if(timer)clearTimeout(timer);}}
     }
   }
+  async prepareMonitoring(analyzeTables:boolean,attemptToken=Date.now()):Promise<any> {
+    return this.run(async()=>{
+      const result=await this.http.transaction([
+        this.http.query("SELECT set_config('statement_timeout','5s',true)"),
+        this.http.query(`SELECT "${this.schema}".prepare_monitoring($1,$2,$3) AS result`,[this.generation,analyzeTables,attemptToken])
+      ],{fetchOptions:{signal:AbortSignal.timeout(6000)}});
+      return result[1][0].result;
+    });
+  }
   async health():Promise<Record<string,unknown>> {
     let metadata:Record<string,unknown>;
     try {
       const [control,capacity]=await this.batch([
         {sql:'SELECT backend,generation,schema_version FROM backend_control WHERE singleton=1'},
-        {sql:'SELECT prepared_at,database_bytes,storage_limit_bytes,restore_verified_at FROM capacity_statistics WHERE singleton=1'}
+        {sql:'SELECT * FROM capacity_statistics WHERE singleton=1'}
       ]);
       metadata={...control.toArray()[0],connected:true,capacity:capacity.toArray()[0] ?? null};
     }catch {metadata={connected:false,capacity:null};}
