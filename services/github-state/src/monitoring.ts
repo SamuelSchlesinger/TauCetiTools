@@ -21,15 +21,15 @@ export function capacity(current:CapacitySample,previous?:CapacitySample,now=Dat
 }
 
 // PostgreSQL storage grows automatically; only an operator-verified effective
-// project/account allowance is a capacity threshold. Never infer a 10 GiB cap.
+// database/branch allowance is a capacity threshold. Never infer a 10 GiB cap.
 export function postgresCapacity(statistics:any,previous?:CapacitySample,now=Date.now(),prior?:any):any {
   const valid=(n:any)=>Number.isSafeInteger(n) && n>=0;
-  if(!valid(statistics?.database_bytes) || !valid(statistics?.prepared_at))return {...prior,backend:'postgres',growable:true,allowance:null,allowance_kind:'operator_verified_effective_project_account_limit',usage_scope:'current_database_lower_bound',project_usage_bytes:null,stale:true,capacity_unknown:true};
+  if(!valid(statistics?.database_bytes) || !valid(statistics?.prepared_at))return {...prior,backend:'postgres',growable:true,allowance:null,allowance_kind:'operator_verified_database_or_branch_limit',usage_scope:'current_database_lower_bound',project_usage_bytes:null,stale:true,capacity_unknown:true};
   const limit=valid(statistics.storage_limit_bytes) && statistics.storage_limit_bytes>0?statistics.storage_limit_bytes:null;
   return {...capacity({at:statistics.prepared_at,bytes:statistics.database_bytes,allowance:limit},previous,now,prior),
-    backend:'postgres',growable:true,allowance_kind:'operator_verified_effective_project_account_limit',
+    backend:'postgres',growable:true,allowance_kind:'operator_verified_database_or_branch_limit',
     reusable_bytes:null,reusable_space_reason:'dead_tuple_estimates_are_not_measured_free_space',
-    usage_scope:'current_database_lower_bound',allowance_scope:'effective_project_account',project_usage_bytes:null,
+    usage_scope:'current_database_lower_bound',allowance_scope:'database_or_branch',project_usage_bytes:null,
     restore_verified_at:statistics.restore_verified_at ?? null};
 }
 
@@ -97,7 +97,9 @@ export class RepairMetrics {
 // event, never proof of delivery to a human or to an external destination.
 export function emitAlarm(env: Env, repository: string, observation: any): { channel: string; emitted: boolean; notified: false; error?: string } {
   try {
+    const {branches,history,...provider}=observation.provider || {};
     log('github_state_capacity_alarm', { repository, level: observation.level, at: observation.at, capacity: observation.capacity,
+      provider:observation.provider?provider:undefined,compute:observation.compute,connections:observation.connections,
       reasons: observation.reasons, operator_action: 'Follow docs/github-state-retention.md', deployment_id: env.CF_VERSION?.id });
     return { channel: 'configured_workers_observability', emitted: true, notified: false };
   } catch { return { channel: 'configured_workers_observability', emitted: false, notified: false, error: 'observability_emit_failed' }; }
