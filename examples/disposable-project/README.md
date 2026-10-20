@@ -2,10 +2,8 @@
 
 `content/` and `roadmap/` are two separate starter repository trees, sharing a real pinned
 Mathlib manifest and toolchain. They contain no credentials or enabled optional integrations.
-The engine pins currently identify the implementation PRs:
-[Review #180](https://github.com/TauCetiProject/TauCetiReview/pull/180) and
-[Progress #29](https://github.com/TauCetiProject/TauCetiProgress/pull/29).
-They are immutable commits available for trying the changes before merge.
+The configuration selects immutable commits from the published Tools, Review and Progress
+repositories.
 
 Copy these trees out of Tools. In `content/tauceti.toml`, replace `ExampleOrg`, `ExampleCeti`
 and `ExampleMaintainer` with your actual repository/root/owner names. Rename the Lean roots,

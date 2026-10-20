@@ -82,12 +82,12 @@ mode = "off"
 
 [tools.tools]
 repo="TauCetiProject/TauCetiTools"
-ref="4c54de2c219ff88229741c02faba876b8fa2b094"
+ref="02db6ea51c27553cb6271e605612a56169ae72f6"
 
 [tools.review]
 repo="TauCetiProject/TauCetiReview"
-ref="621d4c1cfa431edcfaa744fffcc9c040d64787e5"
+ref="66cc20065f94fdd4ddfea884eb3a201cce9d5876"
 
 [tools.progress]
 repo="TauCetiProject/TauCetiProgress"
-ref="eb550fd09bd9cdec4c3f3fe6d57c432464a97fb4"
+ref="5e6625a243df7d3711623661a72f39c8afa58a07"
