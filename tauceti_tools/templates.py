@@ -32,6 +32,9 @@ def substitutions(project: Project) -> list[tuple[str, str]]:
         ("TauCetiProject/TauCetiCI", project.repos.get("ci", "")),
         ("TauCetiProject/tauceti-claims", project.repos.get("claims", "")),
         (CANONICAL, project.content),
+        ("owner: TauCetiProject\n", "owner: " + project.content.split("/")[0] + "\n"),
+        ("repositories: TauCeti\n", "repositories: " + project.content.split("/")[1] + "\n"),
+        ("repositories: tauceti-claims\n", "repositories: " + project.repos.get("claims", "/").split("/")[1] + "\n"),
         ("https://bors.taucetiproject.org", project.service("bors").get("url", "")),
         ("https://taucetiproject.github.io/TauCeti/docs", project.raw.get("publication", {}).get("docs_url", "")),
         ("roadmap_dir: TauCetiRoadmap", "roadmap_dir: " + project.roadmap_dir),
@@ -213,6 +216,14 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
         target = checkout / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         text = render(source.read_text(), project)
+        if relative.name == "claims-access.yml" and project.repos.get("claims"):
+            text = text.replace(
+                "owner: " + project.content.split("/")[0], "owner: " + project.repos["claims"].split("/")[0]
+            )
+        if relative.name == "nightly-verify.yml" and not project.legacy:
+            import re
+
+            text = re.sub(r"(?m)^    runs-on: >-\n(?:      .*\n)+", "    runs-on: ubuntu-24.04\n", text)
         if (
             relative.suffix in (".yml", ".yaml")
             and ".github/workflows" in relative.as_posix()
@@ -227,7 +238,7 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
             import re
 
             text = re.sub(
-                r"(TauCetiReview/\.github/workflows/[^@\s]+@)[0-9a-f]{40}",
+                rf"({re.escape(review['repo'])}/\.github/workflows/[^@\s]+@)[0-9a-f]{{40}}",
                 lambda m, ref=review["ref"]: m[1] + ref,
                 text,
             )
@@ -353,6 +364,8 @@ def write_auxiliary(project: Project, checkout: Path, role: str) -> list[str]:
         if role == "roadmap" and relative.name.startswith("progress-") and not project.feature("progress"):
             continue
         text = render(original.read_text(), project)
+        if role == "ci":
+            text = text.replace("owner: ${{ github.repository_owner }}", "owner: " + project.content.split("/")[0])
         if original.suffix == ".yml":
             # Fetch the one canonical config without adding a second policy file.
             setup = f"""      - name: Checkout pinned shared tools
