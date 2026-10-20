@@ -339,7 +339,7 @@ def write_auxiliary(project: Project, checkout: Path, role: str) -> list[str]:
         relative = original.relative_to(source)
         if relative.name == "progress-announce.yml" and not project.feature("zulip"):
             continue
-        if role == "roadmap" and not project.feature("progress"):
+        if role == "roadmap" and relative.name.startswith("progress-") and not project.feature("progress"):
             continue
         text = render(original.read_text(), project)
         if original.suffix == ".yml":

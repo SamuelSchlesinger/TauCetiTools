@@ -717,3 +717,37 @@ credential directory, then give the worker `--github-state-url https://github-st
 and `--github-state-token-file /PRIVATE/client-token`. Keep the admin token and App private key
 on the service operator's machine. Hosted enrollment uses the existing operator's public App
 installation URL and repository-scoped token instead of deploying a second service.
+
+### Roadmap Lean package
+
+The roadmap is a separate Lake package. It can depend on the content package if its target
+statements use that project's definitions, or directly on Mathlib for a new empty project.
+Use a matching toolchain and commit its manifest. For the active/completed directory names
+shown above, its `lakefile.toml` contains:
+
+```toml
+name = "ExampleCetiRoadmap"
+defaultTargets = ["ExampleCetiRoadmap", "Completed"]
+
+[[require]]
+name = "ExampleCeti"
+git = "https://github.com/ExampleOrg/ExampleCeti"
+rev = "main"
+
+[[lean_lib]]
+name = "ExampleCetiRoadmap"
+globs = ["ExampleCetiRoadmap.*"]
+
+[[lean_lib]]
+name = "Completed"
+globs = ["Completed.+"]
+```
+
+Use the content package's actual Lake name in `require`. Keep empty root modules
+`ExampleCetiRoadmap.lean` and `Completed.lean`, and put human-written target statements in
+`ExampleCetiRoadmap/AREA/Suggested.lean`. These statements may use `sorry`; the content
+repository's no-axiom/no-sorry audit does not apply to specifications. Each area has a
+`README.md` and its arXiv topic in `metadata.toml`. The supplied roadmap CI builds this
+package on pull requests, main pushes and merge groups; its job name is `build`. Require
+that check and human review in the roadmap's branch rules. The optional progress gate
+validates the generated report's exact diff before using its scoped merge App.
