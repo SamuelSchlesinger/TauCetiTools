@@ -118,6 +118,20 @@ background reads only. Health includes lane eligibility, oldest requested age,
 repair arrivals/completions/cancellations, wait reasons, requested latency p95,
 and measured cost/latency by query shape and batch size.
 
+For an isolate-reset investigation, temporarily set `RECONCILIATION_TRACE` to
+`"true"`. Background alarm and publication stage logs contain only the backend,
+operation, page number, and start timestamp. They exclude query arguments, keys,
+cursors, credentials, and payloads. Tracing is disabled by default; remove the
+variable after collecting the diagnostic trace.
+Set it in the selected environment's Wrangler `vars` and deploy; changing the
+variable restarts the object. Traces include aggregate row, repair and staged-character
+counts. `publication_applied` precedes commit; only `refresh_committed` confirms
+the transaction completed. Background storage work can continue after
+`alarm_complete`; its completion is recorded separately as `storage_prepared`.
+An opaque random `trace` correlates stages of the same job object within a
+dispatch, including concurrent jobs with identical operation/page metadata.
+`publication_encode_pages` records the staged size before the encoding scan.
+
 ## Client behavior
 
 Clients request the newest available service data, including conditional reads.

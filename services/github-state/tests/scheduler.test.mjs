@@ -402,3 +402,52 @@ test('whole-batch malformed responses retain the upstream trace and scheduler ba
   assert.equal((await state.meta('last_upstream_failure')).request_id,'batch-trace');
  }finally {await db.close();}
 });
+
+test('opt-in alarm traces identify publication stages without exposing input',async()=>{
+ const {state,db,env}=await fixture(),messages=[],original=console.log;
+ console.log=(...args)=>messages.push(args.join(' '));
+ try {
+  await state.setMeta('repository',{id:'100',name:'org/repo',installation:'200'});
+  const q={repository:'org/repo',operation:'files',args:{number:7}},key='files:{"number":7}';
+  await state.enqueue(q);
+  const job=await db.prepare('SELECT * FROM jobs WHERE key=?').get(key);
+  const result={api:'core',data:[{filename:'private-file-name',patch:'private-payload-marker'}]};
+  state.expire=async()=>({});state.nextJob=async()=>undefined;
+  state.maintenance=async()=>{};state.startStorageMaintenance=()=>{};
+  await state.refresh(job,result);
+  await state.runAlarm();
+  assert.equal(messages.length,0,'ordinary operation has no trace logging');
+  env.RECONCILIATION_TRACE='true';
+  await state.refresh(job,result);
+  env.INSTALLATIONS={idFromName:id=>id,get:()=>({fetch:async()=>Response.json(result)})};
+  await state.dispatch(await state.claim(await db.prepare('SELECT * FROM jobs WHERE key=?').get(key)));
+  await state.runAlarm();
+  state.prepareStorage=async()=>{};await state.storageMaintenance(false);
+  const trace=messages.map(message=>JSON.parse(message));
+  for(const stage of ['refresh_response','publication_load_pages','publication_encode_pages','refresh_transaction','publication_decode_pages','publication_rows','publication_repairs','publication_applied','refresh_committed','dispatch','dispatch_complete','expire','select_jobs','maintenance','storage_maintenance','storage_prepare','storage_prepared','alarm_complete'])
+   assert.ok(trace.some(entry=>entry.stage===stage),stage);
+  for(const entry of trace){
+   assert.equal(entry.event,'repository_repair_trace');
+   assert.ok(Object.keys(entry).every(key=>['event','stage','backend','trace','operation','page','started','rows','repairs','staged_chars'].includes(key)));
+   if(entry.operation)assert.match(entry.trace,/^[a-f0-9-]{36}$/);
+   if(entry.page!==undefined)assert.equal(typeof entry.page,'number');
+   if(entry.started!==undefined && entry.started!==null)assert.equal(typeof entry.started,'number');
+   for(const count of ['rows','repairs','staged_chars'])if(entry[count]!==undefined)assert.equal(typeof entry[count],'number');
+  }
+  assert.equal(messages.join('').includes('private-'),false);
+  assert.equal(messages.join('').includes('number'),false);
+  assert.equal(trace.find(entry=>entry.stage==='publication_rows').rows,1);
+  assert.ok(trace.find(entry=>entry.stage==='refresh_transaction').staged_chars>0);
+  const dispatchTrace=trace.find(entry=>entry.stage==='dispatch').trace;
+  assert.ok(trace.some(entry=>entry.stage==='refresh_committed' && entry.trace===dispatchTrace));
+  assert.ok(trace.some(entry=>entry.stage==='dispatch_complete' && entry.trace===dispatchTrace));
+  const stages=trace.filter(entry=>entry.trace===dispatchTrace).map(entry=>entry.stage);
+  assert.ok(stages.indexOf('publication_encode_pages')<stages.indexOf('refresh_transaction'));
+  assert.ok(stages.indexOf('publication_applied')<stages.indexOf('refresh_committed'));
+  const atomic=state.atomic.bind(state);messages.length=0;
+  state.atomic=apply=>atomic(async scoped=>{await apply(scoped);throw Error('commit interrupted');});
+  await assert.rejects(state.refresh(job,result),/commit interrupted/);
+  assert.ok(messages.some(line=>JSON.parse(line).stage==='publication_applied'));
+  assert.equal(messages.some(line=>JSON.parse(line).stage==='refresh_committed'),false);
+ }finally{console.log=original;await db.close();}
+});
