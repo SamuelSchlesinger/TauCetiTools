@@ -459,7 +459,10 @@ docker compose up -d
 curl --fail https://bors.example.org/health/
 ```
 
-Copy these file contents into their corresponding private runtime variables. Put the numeric
+For Docker, remove the Neon URI query suffix `?sslmode=require&channel_binding=require`
+(or its `sslmode=require` variant) before saving `DATABASE_URL`; the Compose template sets
+`DATABASE_USE_SSL=true` for Postgrex. The Cloudflare upload helper does this normalization.
+Copy the other private file contents into their corresponding runtime variables. Put the numeric
 App ID in `GITHUB_INTEGRATION_ID`; put the automation/review App ID in `TAUCETI_REVIEW_APP_ID`.
 Set `BORS_PROJECT` and `BORS_BASE_BRANCH` to the configured content repository and branch.
 Register the App webhook and callback URLs as above. Sign in to Bors and synchronize the
