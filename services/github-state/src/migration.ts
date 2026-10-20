@@ -228,10 +228,25 @@ export async function verifyStep(bucket: R2Bucket, sql: SqlStorage, state: Migra
 }
 // Check implicitly addressed partial-job pages in bounded groups. The SQL
 // source remains frozen, and the checkpoint advances only after every HEAD.
+// Scan compact bounded windows; idle jobs have no implicit staging pages.
 async function stagingStep(bucket: R2Bucket, sql: SqlStorage, state: Migration): Promise<void> {
   const check=state.staging,columns=state.tables.jobs.columns;
+  const window=sql.exec<any>(`SELECT CAST(rowid AS TEXT) id,CAST(started AS TEXT) started,CAST(page AS TEXT) page FROM jobs ${check.after===null?'':'WHERE rowid>CAST(? AS INTEGER)'} ORDER BY rowid LIMIT 5000`,...(check.after===null?[]:[check.after])).toArray();
+  const active=window.findIndex(row=>{
+    if(row.started===null || row.page===null)return false;
+    if(!/^[0-9]+$/.test(row.started) || !/^[1-9][0-9]*$/.test(row.page))throw new AdminError('migration_job_checkpoint_invalid');
+    return row.page!=='1';
+  });
+  if(check.page!=='1' && active!==0)throw new AdminError('migration_source_mismatch');
+  if(active<0) {
+    if(window.length)check.after=window.at(-1)!.id;else check.complete=true;
+    await saveMigration(bucket,state);return;
+  }
+  // Retain the position immediately before this job while its page checkpoint
+  // advances, so continuation never rescans its preceding idle window.
+  if(active>0)check.after=window[active-1].id;
   const row=sourceRows(sql,'jobs',columns,check.after,1)[0];
-  if(!row) {check.complete=true;await saveMigration(bucket,state);return;}
+  if(!row || row[0]!==window[active].id)throw new AdminError('migration_source_mismatch');
   const value=(name:string)=>(row[columns.findIndex(c=>c.name===name)+1] as Cell)[1];
   const started=value('started'),next=value('page');
   if(started!==null && next!==null) {
@@ -273,7 +288,7 @@ async function blobStep(bucket: R2Bucket, state: Migration): Promise<void> {
     await bucket.put(archiveKey(state.repository, state.generation) + (state.cutover?'/source-receipt.json':'/receipt.json'), encodeMigration(state));
     return;
   }
-  const page = await bucket.list({ prefix: prefixes[check.prefix], cursor: check.cursor, limit: 100, include: ['customMetadata'] });
+  const page = await bucket.list({ prefix: prefixes[check.prefix], cursor: check.cursor, limit: 1000, include: ['customMetadata'] });
   const objects = page.objects.map(o => ({ key: o.key, etag: o.etag, size: o.size, expires: o.customMetadata?.expires ?? null }));
   const text = JSON.stringify(objects), sha256 = await digest(text);
   await bucket.put(`${archiveKey(state.repository, state.generation)}/blobs/${check.pages}.json`, text, { sha256, customMetadata: { sha256 } });

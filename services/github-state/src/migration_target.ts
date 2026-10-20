@@ -180,11 +180,12 @@ export async function activateTarget(env:Env,state:Migration):Promise<void> {
     if(await owner(c,s,state,['migration','postgres'])==='postgres')return;
     // Change only execution ownership, never the quota/backoff due, attempts,
     // generations or collected evidence. Expired staging is reset separately.
-    await c.query(`UPDATE ${s}.jobs SET lease_id=NULL,lease_until=0`);
+    await c.query(`UPDATE ${s}.jobs SET lease_id=NULL,lease_until=0 WHERE lease_id IS NOT NULL OR lease_until IS DISTINCT FROM 0`);
     for(const table of Object.keys(state.tables)) {
       // Imported rowids include signed extrema; a fresh sequence need only
       // allocate unused IDs. Negative archive IDs do not constrain its start.
-      const max=(await c.query(`SELECT COALESCE(MAX(rowid) FILTER(WHERE rowid<9223372036854775807),0)::text n FROM ${s}.${table}`)).rows[0].n;
+      // Seek through the rowid index to bound activation work on large tables.
+      const max=(await c.query(`SELECT COALESCE((SELECT rowid FROM ${s}.${table} WHERE rowid<9223372036854775807 ORDER BY rowid DESC LIMIT 1),0)::text n`)).rows[0].n;
       if(BigInt(max)>=9223372036854775806n)throw new AdminError('migration_rowid_sequence_exhausted');
       // Reserve the signed maximum as an archival ID when present.
       await c.query(`ALTER SEQUENCE ${s}.${table}_rowid_seq MAXVALUE 9223372036854775806`);
