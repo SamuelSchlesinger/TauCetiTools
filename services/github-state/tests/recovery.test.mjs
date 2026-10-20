@@ -1059,3 +1059,96 @@ test('PostgreSQL queue and replay ignore an obsolete SQLite full marker',async()
  assert.equal(h.state.applied.has('postgres-replay-after-sqlite-full'),true);
  assert.equal(JSON.parse(h.archive.objects.get('control/100/storage.json').bytes).state,'full','SQLite recovery evidence remains intact');
 });
+
+test('identical large resource refreshes reuse immutable spills and do not manufacture revisions',async()=>{
+ const {state,db,archive}=repositoryFixture();await state.fixtureReady;
+ let uploads=0;const originalPut=archive.put.bind(archive);archive.put=async(key,...args)=>{if(key.startsWith('resources/'))uploads++;return originalPut(key,...args);};
+ const data={id:'9223372036854775807',body:'x'.repeat(1600000),created_at:'2026-10-20T00:00:00Z'};
+ await state.put('issue_comments',data.id,data,Date.now(),false,'7');
+ const original=db.prepare('SELECT data FROM resources WHERE id=?').get(data.id).data,key=JSON.parse(original).$r2,revision=await state.revision();
+ assert.match(key,/^resources\/100\/sha256-[a-f0-9]{64}$/);
+ archive.objects.get(key).customMetadata.pinned='true';
+ for(let n=0;n<16;n++)await state.put('issue_comments',data.id,data,Date.now(),false,'7');
+ assert.equal(await state.revision(),revision);
+ assert.equal([...archive.objects.keys()].filter(k=>k.startsWith('resources/')).length,1);
+ assert.equal(archive.objects.get(key).customMetadata.pinned,'true','conditional creation must preserve an existing pin');
+ assert.equal(uploads,1,'identical contents must not repeatedly upload the full payload');
+ archive.failures.push((op,k)=>op==='put' && k.startsWith('resources/'));
+ await assert.rejects(state.put('issue_comments',data.id,{...data,changed:true},Date.now(),false,'7'));
+ assert.equal(await state.revision(),revision,'a failed upload cannot publish a new pointer');
+ await state.put('issue_comments',data.id,{...data,changed:true},Date.now(),false,'7');
+ assert.equal([...archive.objects.keys()].filter(k=>k.startsWith('resources/')).length,2);
+ assert.equal((await state.decode(original)).changed,undefined,'old retained references remain readable');
+ assert.equal((await state.decode(db.prepare('SELECT data FROM resources WHERE id=?').get(data.id).data)).changed,true);
+});
+
+test('spill reuse preserves legacy references and staging expiry stays independent',async()=>{
+ const {state,archive}=repositoryFixture();await state.fixtureReady;
+ const data={rows:['x'.repeat(1600000)]},old='resources/100/old-reference';
+ await archive.put(old,JSON.stringify(data),{customMetadata:{kind:'resource',expires:'1'}});
+ const encoded=await state.encode(data),key=JSON.parse(encoded).$r2;
+ // Even incorrectly copied cursor metadata cannot reclassify the new resource key.
+ archive.objects.get(key).customMetadata={kind:'cursor',expires:'1'};
+ assert.equal((await retention.retirePrefix(archive,'legacy_staging_spills')).deleted,0);
+ assert.deepEqual(await state.decode(JSON.stringify({$r2:old})),data);
+ assert.deepEqual(await state.decode(encoded),data);
+ const expires=Date.now()-1,a=await state.encode(data,expires),b=await state.encode(data,expires);
+ assert.notEqual(a,b,'expiring staging uploads cannot share a resource lifetime');
+ assert.equal((await retention.retirePrefix(archive,'staging_spills')).deleted,2);
+ assert.deepEqual(await state.decode(encoded),data);
+});
+
+test('a known frozen source survives startup retries without relaxing ownership fences',async()=>{
+ const {db,state}=repositoryFixture();try {
+  await state.fixtureReady;
+  await state.put('pr','7',{number:7,title:'retained header'});
+  await state.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?)','pr:{"number":7}','pr','{"number":7}',1,Date.now(),await state.revision(),null);
+  const generation='frozen-source';
+  state.localSetMeta('backend_owner',{protocol:'s2-selection-v1',backend:'migration',generation});
+  state.migrationState={phase:'switching',generation,cutover:{source_fenced:true,target_active:false}};
+  state.startup();assert.equal(state.schema,'current');
+  const result=await queryFixture(state,{operation:'pr',args:{number:7}});
+  assert.equal(result.status,'ok');assert.equal(result.data.title,'retained header');
+  await assert.rejects(state.store.exec("INSERT INTO demand VALUES('illegal',1)"),/migration_frozen|generation fenced/);
+  await assert.rejects(state.put('pr','8',{number:8}),/migration_frozen|generation fenced/);
+  state.migrationState={...state.migrationState,generation:'wrong-generation'};
+  state.startup();assert.equal(state.schema.error,'backend_fenced');
+  state.migrationState={phase:'complete',generation,cutover:{source_fenced:true,target_active:true}};
+  state.startup();assert.equal(state.schema.error,'backend_fenced','activated target cannot fall back to the old source');
+ }finally {db.close();}
+});
+
+test('native source fences survive fresh constructors and recovered control revalidates fallback reads',async()=>{
+ const first=repositoryFixture();await first.fixtureReady;const {db,archive,state}=first;
+ try{
+  await state.put('pr','7',{number:7,title:'frozen history'});
+  await state.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?)','pr:{"number":7}','pr','{"number":7}',1,Date.now(),await state.revision(),null);
+  const generation='c707ddba-076d-4a63-8696-96533031ce88',checkpoint={version:1,generation,repository:'100',target:'test-target',source:{object:'fixture',deployment:'test-deployment',schema:5},phase:'switching',created:Date.now(),updated:Date.now(),tables:{},failure:null,staging:{after:null,page:'1',checked:0,complete:false,expired_jobs:0,expired_hash:'0'.repeat(64)},blobs:{prefix:0,pages:0,objects:0,hash:'0'.repeat(64),complete:false},cutover:{environment:'test',lease_until:Date.now()+900000,epoch:0,source_fenced:false,target_active:false,import:{},verify:{},acceptance:''}};
+  await state.fenceMigration(checkpoint);checkpoint.cutover.source_fenced=true;
+  for(const fault of [false,true])for(const unavailable of [false,true])for(const adminRetry of [false,true])for(const activated of [false,true]){
+   await archive.put('control/100/migration.json',JSON.stringify(checkpoint));
+   if(unavailable)archive.failures.push((op,key)=>op==='get' && key==='control/100/migration.json');
+   const reset=repositoryFixture({MIGRATION_ENVIRONMENT:'test',FAULT_INJECTION:fault?'true':undefined},1,db,archive);await reset.ready;
+   assert.equal((await queryFixture(reset.state,{operation:'pr',args:{number:7}})).data.title,'frozen history');
+   await assert.rejects(reset.state.setMeta('forbidden',true),/migration_frozen|generation fenced/);
+   assert.throws(()=>db.prepare("INSERT INTO demand VALUES('native-trigger',1)").run(),/generation fenced/);
+   if(unavailable){
+    await archive.put('control/100/migration.json',JSON.stringify({...checkpoint,generation:'c707ddba-076d-4a63-8696-96533031ce89',cutover:{...checkpoint.cutover,target_active:activated}}));
+    if(adminRetry)await reset.state.fetch(new Request('https://internal/migration',{method:'POST',body:JSON.stringify({operation:'status'})}));
+    else await reset.state.retryMigrationControl();
+    assert.equal((await queryFixture(reset.state,{operation:'pr',args:{number:7}})).error,'backend_fenced','recovered control rechecks previously current fallback');
+   }
+  }
+ }finally{db.close();}
+});
+
+test('test-migration constructor waits for a full marker before attempting a legacy schema upgrade',async()=>{
+ const first=repositoryFixture();await first.fixtureReady;const {db,archive}=first;
+ try{
+  db.prepare("DELETE FROM meta WHERE key='schema_version'").run();
+  await archive.put('control/100/storage.json',JSON.stringify({state:'full',since:Date.now(),source:'queue'}));
+  const reset=repositoryFixture({MIGRATION_ENVIRONMENT:'test'},1,db,archive);await reset.ready;
+  assert.equal(db.prepare("SELECT COUNT(*) n FROM meta WHERE key='schema_version'").get().n,0);
+  assert.equal(reset.state.schema,'migration_pending');assert.ok(reset.state.degraded);
+ }finally{db.close();}
+});

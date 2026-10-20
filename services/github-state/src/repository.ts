@@ -157,9 +157,9 @@ export class RepositoryState extends DurableObject<Env> {
       try {repo=this.localMeta('repository')?.id;} catch { /* Fresh test objects have no schema yet. */ }
       if(repo && this.env.ARCHIVE && ['test','production'].includes(this.env.MIGRATION_ENVIRONMENT || '')) {
         try {this.migrationState=await readMigration(this.env.ARCHIVE,repo);await this.selectMigrationBackend();
-          if(this.migrationState?.cutover && this.store.backend==='sqlite')this.schema='current';}
+          if(this.store.backend==='sqlite')this.startup(true);}
         catch {this.migrationUnavailable=true;
-          if(this.localMeta('schema_version')===SCHEMA_VERSION)this.schema='current';}
+          if(this.store.backend==='sqlite')this.startup(true);}
       }
       await this.storageMarker();
       if (env.FAULT_INJECTION==='true' || this.schema!=='current') this.startup();
@@ -188,11 +188,25 @@ export class RepositoryState extends DurableObject<Env> {
   faultKey(): string { return 'faults/'+this.ctx.id.toString()+'.json'; }
   // Existing current schemas start without any write. Migration is one
   // transaction; if it cannot commit, compatible stored data stays readable.
+  private frozenSourceReadable(owner:any,version:unknown):boolean {
+    if(version!==SCHEMA_VERSION || this.store.backend!=='sqlite' || owner?.backend!=='migration' || owner.protocol!=='s2-selection-v1')return false;
+    const state=this.migrationState;
+    // A known activation prohibits source fallback even if selecting its
+    // configuration fails. Unknown control can expose only the locally fenced
+    // source: accepting target input requires a durable local postgres selection.
+    if(state?.cutover?.target_active || state && state.generation!==owner.generation)return false;
+    return this.migrationUnavailable || Boolean(this.migrationHeld() && state?.cutover?.source_fenced);
+  }
   startup(defer=false): void {
     let version:unknown;
     try {version=this.localMeta('schema_version');} catch {version=undefined;}
     let owner:any;try{owner=this.localMeta('backend_owner');}catch{if(version!==undefined)throw new Error('Invalid backend ownership metadata');}
-    if(owner && (owner.backend!=='sqlite' || owner.generation!==(this.env.REPOSITORY_GENERATION || 'sqlite-v1'))) {this.schema={error:'backend_fenced',missing:[],cause:'backend_fenced'};return;}
+    if(owner && (owner.backend!=='sqlite' || owner.generation!==(this.env.REPOSITORY_GENERATION || 'sqlite-v1'))) {
+      // A known frozen source remains readable after a constructor or storage
+      // marker retry. The adapters and migration gate still fence every write.
+      const frozenSource=this.frozenSourceReadable(owner,version);
+      this.schema=frozenSource?'current':{error:'backend_fenced',missing:[],cause:'backend_fenced'};return;
+    }
     if(version===SCHEMA_VERSION) {this.schema='current';return;}
     if(this.migrationHeld()) {this.schema='migration_pending';return;}
     if(this.degraded || defer && this.sql.exec<any>("SELECT COUNT(*) n FROM sqlite_master WHERE type='table' AND name='meta'").one().n) {
@@ -407,11 +421,16 @@ export class RepositoryState extends DurableObject<Env> {
     const text = JSON.stringify(data);
     const memoKey=(expires?'staging:':'resource:')+text;
     if(this.preparedEncodings?.has(memoKey))return this.preparedEncodings.get(memoKey)!;
-    if (new TextEncoder().encode(text).length < 1500000) return text;
-    const key = `${expires?'staging-spills':'resources'}/${repositoryId || (await this.meta('repository')).id}/${crypto.randomUUID()}`;
+    const bytes=new TextEncoder().encode(text);
+    if (bytes.length < 1500000) return text;
+    const hash=expires?undefined:await digest(bytes.buffer as ArrayBuffer);
+    const key = `${expires?'staging-spills':'resources'}/${repositoryId || (await this.meta('repository')).id}/${hash?'sha256-'+hash:crypto.randomUUID()}`;
     // Active resources must remain readable for their entire SQL row lifetime.
     // Raw deliveries, staging pages, and snapshots have separate expiry rules.
-    await this.env.ARCHIVE.put(key,text,{customMetadata:{kind:expires?'cursor':'resource',...(expires?{expires:String(expires)}:{})}});
+    // Immutable resource contents reuse one object across identical refreshes.
+    // Conditional creation also preserves any existing operator/migration pin.
+    // Staging uploads retain distinct keys because their expiry can differ.
+    if(!hash || !await this.env.ARCHIVE.head(key))await this.env.ARCHIVE.put(key,bytes,{customMetadata:{kind:expires?'cursor':'resource',...(expires?{expires:String(expires)}:{})},...(hash?{sha256:hash,onlyIf:{etagDoesNotMatch:'*'}}:{})});
     return JSON.stringify({$r2:key});
   }
   async decode(text: string): Promise<any> {
@@ -1916,8 +1935,9 @@ export class RepositoryState extends DurableObject<Env> {
       try {
         this.migrationState=await readMigration(this.env.ARCHIVE,(await this.meta('repository')).id);
         this.migrationUnavailable=false;await this.selectMigrationBackend();
-        if(this.schema!=='current' && !this.migrationHeld() && !this.degraded) this.startup();
-      } catch {this.migrationUnavailable=true; /* Retry without enabling source writes. */ }
+        if(this.store.backend==='sqlite' && this.localMeta('backend_owner')?.backend==='migration')this.startup(true);
+        else if(this.schema!=='current' && !this.migrationHeld() && !this.degraded) this.startup();
+      } catch {this.migrationUnavailable=true;if(this.store.backend==='sqlite')this.startup(true); /* Retry without enabling source writes. */ }
     });
     this.migrationFlight=result.catch(()=>{});
     await result;
@@ -2175,7 +2195,10 @@ export class RepositoryState extends DurableObject<Env> {
       // SQL reads down. An admin retry can reload the barrier after recovery.
       if(this.migrationUnavailable) {
         this.migrationState=await readMigration(this.env.ARCHIVE,repo);
-        this.migrationUnavailable=false;await this.selectMigrationBackend();state=this.migrationState;
+        this.migrationUnavailable=false;
+        if(this.store.backend==='sqlite' && this.localMeta('backend_owner')?.backend==='migration')this.startup(true);
+        try{await this.selectMigrationBackend();}catch(error){this.migrationUnavailable=true;throw error;}
+        state=this.migrationState;
       }
       if(input.operation==='status') {state=await readMigration(this.env.ARCHIVE,repo);return json(publicReceipt(state));}
       if(input.operation==='start' || state?.cutover && !['preflight'].includes(input.operation)) return await this.cutover(input,state,repo);
