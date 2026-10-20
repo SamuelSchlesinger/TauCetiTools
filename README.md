@@ -28,3 +28,6 @@ Project data and local worker identities are isolated; provider quotas remain ac
 Optional Bors `hosted` mode supplies a separate operator-funded Neon project. The downstream
 still operates Bors, on its own Docker host or Cloudflare account. Hosted state-service access
 requires a separate operator grant.
+
+A [disposable project](examples/disposable-project) supplies separate content and roadmap trees
+with real immutable tool and Mathlib pins. It does not create repositories or enroll hosted services.
