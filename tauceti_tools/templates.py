@@ -71,6 +71,16 @@ def render(text: str, project: Project) -> str:
 
 
 def materialize(project: Project, destination: Path, *, policy_dir: Path | None = None):
+    # Read policy first: local callers may materialize directly over scripts/.
+    policies = (
+        [
+            (source.name, source.read_bytes())
+            for source in policy_dir.iterdir()
+            if source.suffix in (".txt", ".json") and source.is_file()
+        ]
+        if policy_dir and policy_dir.is_dir()
+        else []
+    )
     destination.mkdir(parents=True, exist_ok=True)
     for source in (ASSETS / "scripts").rglob("*"):
         if not source.is_file() or "__pycache__" in source.parts:
@@ -84,10 +94,8 @@ def materialize(project: Project, destination: Path, *, policy_dir: Path | None 
         else:
             target.write_text(content)
         target.chmod(source.stat().st_mode & 0o777)
-    if policy_dir and policy_dir.is_dir():
-        for source in policy_dir.iterdir():
-            if source.suffix in (".txt", ".json") and source.is_file():
-                shutil.copyfile(source, destination / source.name)
+    for name, contents in policies:
+        (destination / name).write_bytes(contents)
 
 
 def run_script(name: str, args: list[str], project: Project | None = None) -> int:
