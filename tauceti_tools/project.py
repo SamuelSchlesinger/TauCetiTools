@@ -235,7 +235,7 @@ def parse(data: bytes, source: str = "") -> Project:
     for name, value in _table(raw, "services").items():
         if not isinstance(value, dict) or value.get("mode") not in ("off", "hosted", "custom"):
             raise ConfigError(f"services.{name}.mode must be off, hosted or custom")
-        for key in ("url", "artifact_url", "revision_url"):
+        for key in ("url", "artifact_url", "revision_url", "artifact_write_url", "revision_write_url"):
             if value.get(key):
                 url = urllib.parse.urlsplit(value[key])
                 if url.scheme != "https" or not url.hostname or url.username or url.password:

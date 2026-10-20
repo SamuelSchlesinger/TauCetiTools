@@ -751,3 +751,58 @@ repository's no-axiom/no-sorry audit does not apply to specifications. Each area
 package on pull requests, main pushes and merge groups; its job name is `build`. Require
 that check and human review in the roadmap's branch rules. The optional progress gate
 validates the generated report's exact diff before using its scoped merge App.
+
+### R2 cache setup
+
+A concrete custom cache can use one R2 bucket, `exampleceti-cache`, with `artifacts/` and
+`revisions/` prefixes. In the selected Cloudflare account, open R2 object storage, create that
+bucket, and attach `cache.example.org` in its Settings under Custom Domains. The domain must
+belong to that account's Cloudflare zone. Wait for its status to become active. This supplies
+anonymous reads through the domain. [Cloudflare's public-bucket instructions](https://developers.cloudflare.com/r2/buckets/public-buckets/)
+describe that operation.
+
+For publication, open R2's Account Details, select Manage beside API Tokens, and create an
+account token named `ExampleCeti cache writer`. Grant Object Read & Write, limited to
+`exampleceti-cache`. Save the resulting Access Key ID and Secret Access Key privately when
+shown; the secret cannot be retrieved later. This bucket-scoped S3 credential is separate
+from a general Cloudflare administration token. [R2 authentication instructions](https://developers.cloudflare.com/r2/api/tokens/)
+cover the provider controls and endpoint jurisdictions.
+
+Set these public configuration values, replacing ACCOUNT_ID with the selected account:
+
+```toml
+[services.cache]
+mode = "custom"
+name = "exampleceti-public"
+domain = "cache.example.org"
+artifact_url = "https://cache.example.org/artifacts"
+revision_url = "https://cache.example.org/revisions"
+artifact_write_url = "https://ACCOUNT_ID.r2.cloudflarestorage.com/exampleceti-cache/artifacts"
+revision_write_url = "https://ACCOUNT_ID.r2.cloudflarestorage.com/exampleceti-cache/revisions"
+```
+
+For a jurisdictional bucket use its matching S3 hostname from the provider's confirmation.
+In the content repository's Actions variables enter:
+
+| Variable | Value from the configuration |
+|---|---|
+| `LAKE_CACHE_ARTIFACT_ENDPOINT_PUBLIC` | `artifact_url` |
+| `LAKE_CACHE_REVISION_ENDPOINT_PUBLIC` | `revision_url` |
+| `LAKE_CACHE_ARTIFACT_ENDPOINT` | `artifact_write_url` |
+| `LAKE_CACHE_REVISION_ENDPOINT` | `revision_write_url` |
+
+Save `ACCESS_KEY_ID:SECRET_ACCESS_KEY` as the sole line of the private file
+`~/.config/tauceti/projects/exampleorg__exampleceti/cache/LAKE_CACHE_KEY`, mode 0600.
+Upload it without placing the value on a command line:
+
+```sh
+gh secret set LAKE_CACHE_KEY --repo ExampleOrg/ExampleCeti \
+  < ~/.config/tauceti/projects/exampleorg__exampleceti/cache/LAKE_CACHE_KEY
+```
+
+A post-merge `CI` run stages outputs and its existing `publish-lake-cache` job uploads them.
+Inspect that job's upload and public confirmation steps; a skipped optional publisher is not
+proof that the key works. Keep publisher credentials out of untrusted build execution. For
+hosted cache, request a grant instead of creating a bucket; the operator supplies scoped write
+credentials and all four endpoint values privately. Installation of an App alone grants none
+of this access.

@@ -81,11 +81,13 @@ test('a full repository keeps serving stored reads, parks ingestion, recovers he
   assert.equal(before.rows.length,count);assert.ok(before.pages>1,'inventory spans pages');
   const archive=await mf.getR2Bucket('ARCHIVE');
   assert.ok((await archive.list({prefix:'cursors/'+repository.id+'/'})).objects.length>0,'continuations are stored in R2');
-  const etag=(await get(mf,'open_prs')).headers.get('etag');
 
   // Inject a full database: inserts and updates fail, reads and deletes work.
   assert.equal((await adminPost(mf,'/admin/storage/fault',{mode:'full'})).status,200);
   await wait(300);
+  // An already-running repair may have committed between the old snapshot and
+  // fault injection. Bind the conditional read to the now-parked revision.
+  const etag=(await get(mf,'open_prs')).headers.get('etag');
   const quota=network.count;
   assert.equal((await get(mf,'open_prs',{},{'If-None-Match':etag})).status,304,'conditional read');
   const hit=await (await get(mf,'open_prs')).json();

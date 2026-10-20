@@ -88,6 +88,8 @@ mode = "off"
 # name = "{name.lower()}-public"
 # artifact_url = "https://cache.example.org/artifacts"
 # revision_url = "https://cache.example.org/revisions"
+# artifact_write_url = "https://ACCOUNT_ID.r2.cloudflarestorage.com/PROJECT-cache/artifacts"
+# revision_write_url = "https://ACCOUNT_ID.r2.cloudflarestorage.com/PROJECT-cache/revisions"
 
 [publication]
 # docs_url = "https://{org.lower()}.github.io/{name}/docs"

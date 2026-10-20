@@ -286,6 +286,8 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
                 {
                     "LAKE_CACHE_ARTIFACT_ENDPOINT_PUBLIC": cache.get("artifact_url", ""),
                     "LAKE_CACHE_REVISION_ENDPOINT_PUBLIC": cache.get("revision_url", ""),
+                    "LAKE_CACHE_ARTIFACT_ENDPOINT": cache.get("artifact_write_url", ""),
+                    "LAKE_CACHE_REVISION_ENDPOINT": cache.get("revision_write_url", ""),
                 }
             )
         for name, expected in expected_variables.items():
@@ -413,8 +415,30 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
                     step
                     for job in _items(jobs, "jobs")
                     for step in job.get("steps", [])
-                    if "create-github-app-token" in step.get("name", "").lower()
+                    if any(
+                        label in step.get("name", "").lower()
+                        for label in (
+                            "create-github-app-token",
+                            "mint merge token",
+                            "mint comment token",
+                            "mint repo-scoped app token",
+                            "mint the app token",
+                        )
+                    )
                 ]
+                if consumer == "pr-build" and not job_error and latest.get("conclusion") == "success":
+                    steps = [step for job in _items(jobs, "jobs") for step in job.get("steps", [])]
+                    if all(
+                        any(
+                            label in step.get("name", "").lower() and step.get("conclusion") == "success"
+                            for step in steps
+                        )
+                        for label in ("build exact candidate", "report build and bump-guard")
+                    ):
+                        status, summary = (
+                            "ready",
+                            f"Run {latest['id']} built the candidate and reported its statuses using GITHUB_TOKEN; App credentials are checked by Auto-merge",
+                        )
                 changed = max(
                     (row.get("updated_at", "") for row in metadata if row["name"] in ("APP_ID", "APP_PRIVATE_KEY")),
                     default="",
@@ -435,7 +459,9 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
                     "evidence." + consumer.lower(),
                     status,
                     summary,
-                    "Relevant credential-consuming step succeeds without skipping or fallback",
+                    "The actual build/status steps succeed; App-token creation is verified separately in Auto-merge"
+                    if consumer == "pr-build"
+                    else "Relevant credential-consuming step succeeds without skipping or fallback",
                     commands=(
                         [_cmd("gh", "run", "view", str(latest["id"]), "--repo", repo, "--log")]
                         if latest
