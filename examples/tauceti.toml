@@ -1,0 +1,81 @@
+# Canonical, human-owned project configuration. No credentials belong here.
+schema_version = 1
+
+[project]
+name = "TauCeti"
+branch = "main"
+codeowners = ["@kim-em"]
+
+[repositories]
+content = "TauCetiProject/TauCeti"
+roadmap = "TauCetiProject/TauCetiRoadmap"
+review = "TauCetiProject/TauCetiReview"
+# Enable and create these repositories when choosing the corresponding extras.
+data = "TauCetiProject/TauCetiData"
+ci = "TauCetiProject/TauCetiCI"
+claims = "TauCetiProject/tauceti-claims"
+
+[lean]
+roots = ["TauCeti"]
+root_module = "empty"
+
+[roadmap]
+active_dir = "TauCetiRoadmap"
+completed_dir = "Completed"
+
+# Select full commit SHAs before installing the core workflows.
+# Discover a version with: gh api repos/TauCetiProject/TauCetiTools/commits/main --jq .sha
+# [tools.tools]
+# repo = "TauCetiProject/TauCetiTools"
+# ref = "FULL_COMMIT_SHA"
+# [tools.review]
+# repo = "TauCetiProject/TauCetiReview"
+# ref = "FULL_COMMIT_SHA"
+# [tools.progress]
+# repo = "TauCetiProject/TauCetiProgress"
+# ref = "FULL_COMMIT_SHA"
+
+[merge]
+backend = "github-queue"
+checks = ["build", "bump-guard", "scope"]
+
+[[upstreams]]
+repo = "leanprover-community/mathlib4"
+package = "mathlib"
+branch = "master"
+update = true
+overlap = true
+upstream_destination = true
+
+# Everything below is optional. Run doctor --extras to continue beyond core.
+[features]
+archives = false
+ci_archive = false
+claims = false
+docs = false
+progress = false
+zulip = false
+fleet = false
+security_audit = false
+
+[services.github_state]
+mode = "off" # off | hosted | custom
+# url = "https://github-state.example.org"
+
+[services.bors]
+mode = "off" # hosted supplies Neon only; YOU operate the runtime
+deployment = "docker" # docker | cloudflare
+# url = "https://bors.example.org"
+# image = "ghcr.io/taucetiproject/bors-ng@sha256:SELECT_RELEASE_DIGEST"
+
+[services.cache]
+mode = "off"
+# name = "tauceti-public"
+# artifact_url = "https://cache.example.org/artifacts"
+# revision_url = "https://cache.example.org/revisions"
+
+[publication]
+# docs_url = "https://taucetiproject.github.io/TauCeti/docs"
+# zulip_site = "https://leanprover.zulipchat.com"
+# zulip_channel = "Project channel"
+# zulip_topic = "Progress logs"

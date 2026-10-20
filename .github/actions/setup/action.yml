@@ -1,0 +1,30 @@
+name: Prepare shared Tau Ceti tools
+description: Install pinned shared tools and materialize trusted scripts using base-owned configuration
+inputs:
+  tools-repository:
+    required: true
+  tools-ref:
+    required: true
+  project-directory:
+    default: .
+runs:
+  using: composite
+  steps:
+    - uses: actions/checkout@v4
+      with:
+        repository: ${{ inputs.tools-repository }}
+        ref: ${{ inputs.tools-ref }}
+        path: .tauceti-tools
+        persist-credentials: false
+    - shell: bash
+      env:
+        PROJECT_DIRECTORY: ${{ inputs.project-directory }}
+      run: |
+        set -euo pipefail
+        tools_directory="$GITHUB_WORKSPACE/.tauceti-tools"
+        project_directory="$GITHUB_WORKSPACE/$PROJECT_DIRECTORY"
+        export PYTHONPATH="$tools_directory${PYTHONPATH:+:$PYTHONPATH}"
+        python3 -m tauceti_tools config environment --conf "$project_directory/tauceti.toml" --github-env "$GITHUB_ENV"
+        python3 -m tauceti_tools materialize "$RUNNER_TEMP/tauceti-shared-scripts" --conf "$project_directory/tauceti.toml" --policy-dir "$project_directory/scripts"
+        cp -a "$RUNNER_TEMP/tauceti-shared-scripts/." "$project_directory/scripts/"
+        echo "PYTHONPATH=$PYTHONPATH" >> "$GITHUB_ENV"

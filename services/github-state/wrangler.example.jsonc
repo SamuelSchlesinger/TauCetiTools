@@ -1,0 +1,63 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tauceti-github-state",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-11",
+  "observability": {
+    "enabled": true
+  },
+  "keep_vars": true,
+  "version_metadata": {
+    "binding": "CF_VERSION"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "REPOSITORIES",
+        "class_name": "RepositoryState"
+      },
+      {
+        "name": "INSTALLATIONS",
+        "class_name": "InstallationScheduler"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "RepositoryState",
+        "InstallationScheduler"
+      ]
+    }
+  ],
+  "r2_buckets": [
+    {
+      "binding": "ARCHIVE",
+      "bucket_name": "tauceti-github-state"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "EVENTS",
+        "queue": "tauceti-github-state-events"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "tauceti-github-state-events",
+        "max_batch_size": 20,
+        "max_batch_timeout": 1,
+        "max_concurrency": 4,
+        "max_retries": 20,
+        "dead_letter_queue": "tauceti-github-state-events-dlq"
+      }
+    ]
+  },
+  "triggers": {
+    "crons": [
+      "* * * * *"
+    ]
+  }
+}
