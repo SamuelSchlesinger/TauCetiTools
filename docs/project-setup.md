@@ -104,6 +104,47 @@ Commit both `lean-toolchain` and `lake-manifest.json`. Set the Lean library root
 configuration's `lean.roots`. A project following Tau Ceti's empty-root policy uses a glob
 that builds every source module; its root module does not need individual imports.
 
+For a new Mathlib-based starter, obtain the matching toolchain without guessing its version:
+
+```sh
+mathlib_sha=$(gh api repos/leanprover-community/mathlib4/commits/master --jq .sha)
+gh api "repos/leanprover-community/mathlib4/contents/lean-toolchain?ref=$mathlib_sha" \
+  --jq .content | base64 --decode > lean-toolchain
+elan toolchain install "$(cat lean-toolchain)"
+mkdir -p ExampleCeti
+printf 'module\n' > ExampleCeti.lean
+```
+
+Write `lakefile.toml` as follows, then run `lake update`, `lake exe cache get`, and `lake build`:
+
+```toml
+name = "ExampleCeti"
+defaultTargets = ["ExampleCeti"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "master"
+
+[[lean_lib]]
+name = "ExampleCeti"
+globs = ["ExampleCeti.*"]
+leanOptions = { weak.linter.mathlibStandardSet = true, warningAsError = true }
+
+[[lean_exe]]
+name = "axioms"
+root = "scripts.Axioms"
+
+[[lean_exe]]
+name = "module-system"
+root = "scripts.ModuleSystem"
+```
+
+The executable sources arrive with the pinned project templates. For CSLib or another
+upstream, obtain the toolchain from that upstream's selected commit instead and add its Lake
+dependency before resolving the manifest. Do not copy a Mathlib-only manifest into a project
+with additional direct dependencies.
+
 Declare each relevant upstream using a `[[upstreams]]` table: its GitHub repository,
 Lake package name and nominated branch, and whether to update it or scan for overlaps.
 The upstreaming destination is a separate property. A project may depend on both CSLib
@@ -216,7 +257,7 @@ App manager. For a personal owner use `https://github.com/settings/apps/new`.
 
 | Role | Repository permissions | Install on | Webhook |
 |---|---|---|---|
-| Automation | Contents, pull requests, issues, checks, statuses and Actions: write; variables: read | Content; roadmap only if progress enabled | Inactive unless a selected feature needs it |
+| Automation | Contents, pull requests, issues, checks, statuses, Actions and workflows: write; variables: read | Content; roadmap only if progress enabled | Inactive unless a selected feature needs it |
 | Claims admission | Administration and contents: write | Claims repository only | Inactive |
 | Collector | Contents, Actions and pull requests: read | Configured source repositories | Inactive |
 | State mirror | Contents, issues, pull requests, checks, statuses and Actions: read | Enrolled content repository | State service endpoint |
@@ -257,7 +298,9 @@ Store private source files under `~/.config/tauceti/projects/exampleorg__example
 | Name | Source | Location / consumer |
 |---|---|---|
 | `APP_ID` | Automation App numeric ID | Content/roadmap Actions secrets; trusted automation |
-| `APP_PRIVATE_KEY` | Downloaded automation App PEM | Same scopes as APP_ID |
+| `APP_PRIVATE_KEY` | Downloaded automation App PEM | Content repository |
+| `SYNC_BOT_APP_ID` | Automation App numeric ID | Roadmap Actions variable |
+| `SYNC_BOT_APP_PRIVATE_KEY` | Automation App PEM | Roadmap Actions secret |
 | `CLAIMS_APP_ID`, `CLAIMS_APP_PRIVATE_KEY` | Separate claims App | Content Actions secrets; admission workflow |
 | `COLLECTOR_APP_ID`, `COLLECTOR_APP_PRIVATE_KEY` | Collector App, when needed | CI archive Actions secrets |
 | `LAKE_CACHE_KEY` | Cache provider's project-scoped write credential | Trusted cache publication workflow only |
@@ -422,8 +465,8 @@ Register the App webhook and callback URLs as above. Sign in to Bors and synchro
 installation so the repository is registered in its database.
 
 Schedule the existing authenticated `/internal/merge-reconcile` call once per minute through
-localhost. The request uses `x-bors-internal-secret` with the private webhook secret. A host
-script reads that value from a mode-0600 file and supplies it to curl through stdin/config,
+localhost. The request uses `x-bors-internal-secret` with the private webhook secret. The generated host
+script reads that value from a mode-0600 file and supplies it directly as an HTTP header,
 never a visible command argument. Install its cron line with `crontab -e`.
 
 ### Cloudflare Containers
@@ -530,3 +573,146 @@ retention/export facilities; do not recreate a project to repair a credential pr
 To remove an optional service, first stop its publishers/consumers and select its disabled
 mode. Revoke scoped access and decide separately whether to retain or delete durable records.
 Changing configuration never implies deleting a database, archive or deployment.
+
+### Operator database commands
+
+The infrastructure operator keeps a private registry, separate from every public repository.
+For example, save `~/.config/tauceti/neon-projects.json` with mode 0600:
+
+```json
+{
+  "ExampleOrg/ExampleCeti": {
+    "approved": true,
+    "org_id": "THE_OPERATOR_NEON_ORGANIZATION_ID",
+    "region": "aws-us-east-1",
+    "pg_version": 18,
+    "min_cu": 0.25,
+    "max_cu": 0.25,
+    "suspend_timeout_seconds": -1,
+    "history_retention_seconds": 604800
+  }
+}
+```
+
+In the Neon console select the operator organization, open **Settings → API keys**, create
+an organization API key for this administration, and save it privately as
+`~/.config/tauceti/neon-api-key`. The following command previews the resource settings; it
+creates nothing:
+
+```sh
+tauceti-tools neon provision --conf ./tauceti.toml \
+  --registry ~/.config/tauceti/neon-projects.json \
+  --token-file ~/.config/tauceti/neon-api-key
+```
+
+After confirming the project, paid organization and capacity, run the same command with
+`--apply --output ~/.config/tauceti/exampleceti-database-url`. The registry records the Neon
+project ID. Repeating the operation reuses that identity or discovers the existing named
+project; an uncertain create response requires inspection before retrying. The output file
+contains the direct URI and is mode 0600. Send only that credential to the downstream privately.
+Keep the management key with the operator.
+
+Use `neon inspect` with the same configuration, registry and token-file arguments to print
+resource identity without credentials. Record the actual branch ID and database role in the
+private registry as `branch_id` and `role`. `neon rotate` previews password rotation; add
+`--apply --output NEW_PRIVATE_FILE` only while coordinating the runtime secret change with its
+operator. `neon handover` prints the existing project's console link and transfer/export steps.
+No handover command deletes a database.
+
+### Concrete Cloudflare Bors installation
+
+Select a full Bors commit SHA in `[tools.bors]` with repository `TauCetiProject/bors-ng`.
+Clone that revision in a deployment directory, and install its Node dependencies:
+
+```sh
+gh repo clone TauCetiProject/bors-ng bors
+git -C bors fetch origin SELECTED_FULL_BORS_SHA
+git -C bors checkout --detach SELECTED_FULL_BORS_SHA
+cd bors
+npm ci
+npx wrangler login
+```
+
+Copy `wrangler.jsonc` to `wrangler.downstream.jsonc`. Set `account_id` to the account ID shown
+on the Cloudflare dashboard, `name` to `exampleceti-bors`, and `routes[0].pattern` to
+`bors.example.org`. Keep `custom_domain: true`. Change both producer and consumer queue names
+to `exampleceti-bors-webhooks`, the dead-letter queue to `exampleceti-bors-webhooks-dlq`, and
+the R2 bucket to `exampleceti-bors-webhooks`. Keep the existing Durable Object binding name,
+class and migration tag. Create those resources:
+
+```sh
+npx wrangler queues create exampleceti-bors-webhooks-dlq
+npx wrangler queues create exampleceti-bors-webhooks
+npx wrangler r2 bucket create exampleceti-bors-webhooks
+```
+
+Add a top-level `vars` object containing `BORS_PROJECT: "ExampleOrg/ExampleCeti"`,
+`BORS_BASE_BRANCH: "main"`, `BORS_STAGE_DISPATCH_PROJECT: "ExampleOrg/ExampleCeti"`,
+`PUBLIC_HOST: "bors.example.org"`, `BORS_SPECULATIVE_TRAINS: "false"`, and the exact identities:
+
+```sh
+gh api repos/ExampleOrg/ExampleCeti --jq .id
+gh api 'users/EXAMPLE_BORS_APP_SLUG%5Bbot%5D' --jq .id
+gh api repos/ExampleOrg/ExampleCeti/actions/workflows/pr-build.yml --jq .id
+```
+
+Enter these numeric results as `BORS_REPOSITORY_ID`, `BORS_ACTOR_ID` and
+`BORS_CANCELLATION_WORKFLOW_ID`. `TAUCETI_REVIEW_APP_ID` is the automation App's numeric ID;
+`BORS_REVIEW_LOGIN` is its exact `APP_SLUG[bot]` login. These are public identifiers, not keys.
+The repository ID used in a Bors observation URL is instead Bors's own database repository ID,
+visible in its `/repositories/NUMBER` UI; store it as `services.bors.repository_id` only if
+collecting those optional receipts.
+
+Save the App's client ID, client secret, PEM and webhook secret in private files. Upload:
+
+```sh
+python3 deploy/cloudflare/upload_secrets.py \
+  --name exampleceti-bors --config wrangler.downstream.jsonc \
+  --database-url-file /PRIVATE/database-url \
+  --webhook-secret-file /PRIVATE/github-webhook-secret \
+  --github-client-id APP_CLIENT_ID \
+  --github-client-secret-file /PRIVATE/github-client-secret \
+  --github-app-id NUMERIC_APP_ID \
+  --github-private-key-file /PRIVATE/github-private-key.pem \
+  --secret-key-base-file /PRIVATE/secret-key-base
+npx wrangler deploy --config wrangler.downstream.jsonc
+curl --fail https://bors.example.org/health/
+```
+
+The upload helper creates the application secret if its private file does not exist. It
+normalizes a direct Neon URI for the Postgrex driver's explicit TLS setting. Its values travel
+to Wrangler through stdin. The dashboard must have Workers/Containers billing enabled and
+this domain's zone in the selected account. Sign in through the service's GitHub login,
+synchronize the selected installation, and inspect webhook delivery before changing merge
+rules. Public App visibility can be changed on an existing registration under **General →
+Where can this GitHub App be installed? → Any account → Save changes**.
+
+### Concrete state-service installation
+
+From a checkout of the selected Tools revision:
+
+```sh
+cd services/github-state
+npm ci
+npx wrangler login
+python3 scripts/setup.py prepare --repository ExampleOrg/ExampleCeti \
+  --name exampleceti-state --url https://github-state.example.org \
+  --account-id DOWNSTREAM_CLOUDFLARE_ACCOUNT_ID \
+  --credentials-dir ~/.config/exampleceti-state
+```
+
+Open the printed local HTML form in a browser signed in as ExampleOrg's App manager. Click
+**Register dedicated read-only App**, confirm the displayed name, permissions and public
+installation setting, then **Create GitHub App**. Complete the one-time manifest code exchange
+using the script's printed instructions; the code and response are credentials and stay
+private. Install the App with **Only select repositories → ExampleCeti → Install**. Record
+the installation number from the resulting `/settings/installations/NUMBER` URL.
+
+Run `inspect`, `deploy` and `bootstrap` with the same repository/name/URL/account/credentials
+arguments and `--installation NUMBER`. The helper creates or reuses the named queues and R2
+bucket, uploads the private secrets and configures the selected repository. It prints the
+expected result of each operation. Save the generated client token in the operator's private
+credential directory, then give the worker `--github-state-url https://github-state.example.org`
+and `--github-state-token-file /PRIVATE/client-token`. Keep the admin token and App private key
+on the service operator's machine. Hosted enrollment uses the existing operator's public App
+installation URL and repository-scoped token instead of deploying a second service.

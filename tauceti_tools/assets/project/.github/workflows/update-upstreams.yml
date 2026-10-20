@@ -1,0 +1,53 @@
+name: Update configured upstreams
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '43 6 * * *'
+permissions:
+  contents: read
+concurrency:
+  group: upstream-update
+  cancel-in-progress: false
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: __TOOLS_REPO__/.github/actions/setup@__TOOLS_REF__
+        with:
+          tools-repository: __TOOLS_REPO__
+          tools-ref: __TOOLS_REF__
+      - uses: actions/create-github-app-token@29824e69f54612133e76f7eaac726eef6c875baf
+        id: app
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+      - name: Prepare consistent pins without executing upstream code
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: python3 -m tauceti_tools upstreams update --conf tauceti.toml --apply
+      - name: Open the dependency PR
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git diff --quiet -- lake-manifest.json lean-toolchain && exit 0
+          target=$(git hash-object lake-manifest.json)
+          branch="bump-dependencies/$target"
+          existing=$(gh pr list --repo "$REPO" --head "$branch" --json number --jq '.[0].number // empty')
+          [ -z "$existing" ] || exit 0
+          git checkout -b "$branch"
+          git config user.name "project dependency automation"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add lake-manifest.json lean-toolchain
+          git commit -m "Update configured upstream dependencies"
+          gh auth setup-git
+          git push origin "$branch"
+          body="$RUNNER_TEMP/upstream-pr.md"
+          printf 'Update dependency pins from mutually consistent upstream manifests. Source adaptation must preserve the protected build policy.\n\nRoadmap: none\n' > "$body"
+          gh pr create --repo "$REPO" --base "$TAUCETI_BASE_BRANCH" --head "$branch" --title "Update upstream dependencies" --body-file "$body"

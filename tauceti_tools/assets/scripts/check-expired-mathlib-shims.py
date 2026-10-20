@@ -440,7 +440,7 @@ def blocks_bump(replacement: AvailableReplacement) -> bool:
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--repo-root", type=pathlib.Path,
-                        default=pathlib.Path(__file__).resolve().parent.parent)
+                        default=pathlib.Path.cwd())
     parser.add_argument("--manifest", type=pathlib.Path)
     parser.add_argument("--base-manifest", type=pathlib.Path,
                         help="trusted base registry whose live obligations may not be weakened")

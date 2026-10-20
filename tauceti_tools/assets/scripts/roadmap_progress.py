@@ -103,7 +103,7 @@ def snapshot_is_current(path: pathlib.Path) -> bool:
         return False
     if not isinstance(data, dict) or data.get("topic_scheme") != TOPIC_SCHEME:
         return False
-    validator = pathlib.Path(__file__).resolve().parents[1] / "web/static_files/progress.js"
+    validator = pathlib.Path.cwd() / "web/static_files/progress.js"
     script = """
 const validate = require(process.argv[1]);
 try {

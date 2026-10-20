@@ -70,7 +70,7 @@ def main():
     installed = json.loads((directory / "installation.json").read_text())
     if args.environment != "test":
         raise SystemExit("Measurement reads use the test quota owner; production reference access stays disabled")
-    from tauceti_worker.paths import ensure_ssl_cert_file
+    from tauceti_tools.system import ensure_ssl_cert_file
 
     ensure_ssl_cert_file()
     endpoint = "https://github-state-test.taucetiproject.org/admin/reference"

@@ -9,6 +9,8 @@ fallback for direct human merges and for transient cache-service failures.
 
 from __future__ import annotations
 
+import os
+
 import argparse
 import json
 import pathlib
@@ -24,7 +26,7 @@ TOOLCHAIN = re.compile(r"\Aleanprover/lean4:[0-9A-Za-z][0-9A-Za-z._+-]*\Z")
 INPUT_HASH = re.compile(r"\A[0-9a-f]{16}\Z")
 ARTIFACT = re.compile(r"\A[0-9a-f]{16}\.ltar\Z")
 REPOSITORY = re.compile(r"\A[0-9A-Za-z_.-]+/[0-9A-Za-z_.-]+\Z")
-DEFAULT_REPOSITORY = "TauCetiProject/TauCeti"
+DEFAULT_REPOSITORY = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
 
 
 def plain_https_endpoint(value: str) -> str:

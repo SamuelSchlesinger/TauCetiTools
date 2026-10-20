@@ -89,7 +89,7 @@ def digest(parent: int, name: str) -> str:
         return hashes(handle)["sha256"]
 
 
-def snapshot(root: Path, package: str = "TauCeti") -> dict:
+def snapshot(root: Path, package: str = os.environ.get("TAUCETI_LEAN_ROOT", "TauCeti")) -> dict:
     """Record input hashes and SHA-256 of the archives Lake has just verified."""
     if not re.fullmatch(r"[A-Za-z0-9_-]+", package):
         raise ValueError("invalid package name")

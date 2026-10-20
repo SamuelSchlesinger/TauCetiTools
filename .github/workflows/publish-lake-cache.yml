@@ -1,0 +1,258 @@
+name: publish-lake-cache
+
+# Secret-isolated Lake cache publisher shared by main CI and merge-group CI. The caller may
+# execute arbitrary Lean code while producing the staging artifact, so this workflow treats the
+# entire artifact and every reported value as hostile. Only the toolchain pin comes from the
+# immutable revision being published. All planning and confirmation helpers are workflow-pinned
+# and execute without keys. Only inline workflow shell and curl run in the upload step.
+
+on:
+  workflow_call:
+    inputs:
+      tools_repository: {type: string, default: TauCetiProject/TauCetiTools}
+      tools_ref: {type: string, required: true}
+      revision:
+        description: Immutable TauCeti revision whose output map is being published
+        required: true
+        type: string
+      artifact-name:
+        description: Name of the staging artifact produced by the caller
+        required: true
+        type: string
+      reported-toolchain:
+        description: Toolchain used by the staging build (cross-checked against the revision)
+        required: true
+        type: string
+      publication-required:
+        description: Fail rather than skip if cache upload configuration is absent
+        required: false
+        default: false
+        type: boolean
+    outputs:
+      published:
+        description: Whether the revision map was uploaded and observed on the public endpoint
+        value: ${{ jobs.publish.outputs.published }}
+    secrets:
+      LAKE_CACHE_KEY:
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # A NEW ephemeral runner for this job, separate from the candidate sandbox.
+    # Direct labels request no privileged container, cache volume, git mirror or tool cache.
+    # Priority zero precedes compiler jobs; run-ID assignment prevents cross-run pickup.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      published: ${{ steps.result.outputs.published }}
+    env:
+      TAUCETI_REPO: ${{ github.repository }}
+    steps:
+      - name: Check publisher isolation before receiving staged data
+        env:
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+        run: |
+          set -euo pipefail
+          printf 'Publisher runner=%s workflow=%s run=%s attempt=%s\n' \
+            "$RUNNER_NAME" "$WORKFLOW_SHA" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT"
+          # No shared Namespace volume or pre-existing candidate build is permitted.
+          if mountpoint -q /cache || [ -e .lake ]; then
+            echo '::error::publisher has shared cache or candidate build state; check Namespace routing'
+            exit 1
+          fi
+      # Candidate configuration/code is never loaded on this runner. Cross-check
+      # only the immutable toolchain pin; executable helpers come from the workflow.
+      - name: Check out the immutable toolchain pin
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+          sparse-checkout: lean-toolchain
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Check out workflow-pinned publication planning tools
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.tools_repository }}
+          ref: ${{ inputs.tools_ref }}
+          path: publisher-tools
+          sparse-checkout: |
+            tauceti_tools/assets/scripts/lake_cache_publish.py
+            tauceti_tools/assets/scripts/ci_publication_observation.py
+            tauceti_tools/assets/scripts/lake_cache_probe.py
+            tauceti_tools/assets/scripts/lake_cache_reuse.py
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the staged oleans
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: ${{ runner.temp }}/lake-cache-staging
+
+      - name: Install elan (pinned + checksum) and the pinned toolchain
+        id: toolchain
+        env:
+          ELAN_SHA256: df0b2b3a439961ffcbb3985214365ffe40f49bc871df04dff268c7d8e21ca8b2
+          ELAN_VER: v4.2.3
+          REPORTED: ${{ inputs.reported-toolchain }}
+        run: |
+          set -euo pipefail
+          TOOLCHAIN="$(cat lean-toolchain)"
+          case "$TOOLCHAIN" in
+            leanprover/lean4:[A-Za-z0-9]*) ;;
+            *) echo "::error::lean-toolchain names '$TOOLCHAIN', which is not a leanprover/lean4 release"; exit 1 ;;
+          esac
+          if [ "$TOOLCHAIN" != "$REPORTED" ]; then
+            echo "::error::the staging build used '$REPORTED' but the revision pins '$TOOLCHAIN'"
+            exit 1
+          fi
+          curl -sSL -H "Accept: application/octet-stream" \
+            "https://github.com/leanprover/elan/releases/download/${ELAN_VER}/elan-x86_64-unknown-linux-gnu.tar.gz" -o elan.tar.gz
+          echo "${ELAN_SHA256}  elan.tar.gz" | sha256sum -c -
+          tar -xzf elan.tar.gz elan-init
+          ./elan-init -y --default-toolchain none
+          rm -f elan.tar.gz elan-init
+          echo "$HOME/.elan/bin" >> "$GITHUB_PATH"
+          "$HOME/.elan/bin/elan" toolchain install "$TOOLCHAIN"
+          printf 'name=%s\n' "$TOOLCHAIN" >> "$GITHUB_OUTPUT"
+
+      - name: Validate staged data and verify inherited objects without credentials
+        if: ${{ vars.LAKE_CACHE_ARTIFACT_ENDPOINT != '' && vars.LAKE_CACHE_REVISION_ENDPOINT != '' && vars.LAKE_CACHE_ARTIFACT_ENDPOINT_PUBLIC != '' }}
+        env:
+          STAGING: ${{ runner.temp }}/lake-cache-staging
+          S3_ARTIFACT_ENDPOINT: ${{ vars.LAKE_CACHE_ARTIFACT_ENDPOINT }}
+          S3_REVISION_ENDPOINT: ${{ vars.LAKE_CACHE_REVISION_ENDPOINT }}
+          PUBLIC_ARTIFACT_ENDPOINT: ${{ vars.LAKE_CACHE_ARTIFACT_ENDPOINT_PUBLIC }}
+          REVISION: ${{ inputs.revision }}
+          TOOLCHAIN: ${{ steps.toolchain.outputs.name }}
+        run: |
+          python3 publisher-tools/tauceti_tools/assets/scripts/lake_cache_publish.py prepare \
+            "$STAGING" "$RUNNER_TEMP/lake-publication-plan" \
+            --toolchain "$TOOLCHAIN" --revision "$REVISION"
+
+      - name: Publish the staged Lake cache
+        id: upload
+        env:
+          S3_ARTIFACT_ENDPOINT: ${{ vars.LAKE_CACHE_ARTIFACT_ENDPOINT }}
+          S3_REVISION_ENDPOINT: ${{ vars.LAKE_CACHE_REVISION_ENDPOINT }}
+          PUBLIC_REVISION_ENDPOINT: ${{ vars.LAKE_CACHE_REVISION_ENDPOINT_PUBLIC }}
+          PUBLIC_ARTIFACT_ENDPOINT: ${{ vars.LAKE_CACHE_ARTIFACT_ENDPOINT_PUBLIC }}
+          LAKE_CACHE_KEY_RAW: ${{ secrets.LAKE_CACHE_KEY }}
+          ELAN_TOOLCHAIN: ${{ steps.toolchain.outputs.name }}
+          REVISION: ${{ inputs.revision }}
+          PUBLICATION_REQUIRED: ${{ inputs.publication-required }}
+        run: |
+          set -euo pipefail
+          skip_or_fail() {
+            if [ "$PUBLICATION_REQUIRED" = true ]; then
+              echo "::error::$1"
+              exit 1
+            fi
+            echo "::notice::$1"
+            exit 0
+          }
+
+          case "$REVISION" in
+            *[!0-9a-f]*|'') echo "::error::revision is not a lowercase hexadecimal Git object ID"; exit 1 ;;
+          esac
+          [ "${#REVISION}" = 40 ] || { echo "::error::revision is not a 40-character Git object ID"; exit 1; }
+          [ -n "$S3_ARTIFACT_ENDPOINT" ] && [ -n "$S3_REVISION_ENDPOINT" ] \
+            || skip_or_fail 'the Lake cache upload endpoints are not configured'
+          [ -n "$PUBLIC_ARTIFACT_ENDPOINT" ] \
+            || skip_or_fail 'the public Lake artifact endpoint is not configured'
+          [ -n "$PUBLIC_REVISION_ENDPOINT" ] \
+            || skip_or_fail 'the public Lake revision endpoint is not configured'
+          [ -n "$LAKE_CACHE_KEY_RAW" ] \
+            || skip_or_fail 'the LAKE_CACHE_KEY secret is not configured'
+
+          KEY="$LAKE_CACHE_KEY_RAW"
+          KEY="${KEY%"${KEY##*[![:space:]]}"}"
+          [ -n "$KEY" ] || skip_or_fail 'the LAKE_CACHE_KEY secret is empty after trimming'
+          echo "::add-mask::$KEY"
+
+          # The workflow-pinned, key-free planner supplied only validated flat files
+          # and URLs. No repository helper, Lake workspace, or candidate code executes
+          # in this step. Artifacts complete before the FULL map becomes visible.
+          PLAN="$RUNNER_TEMP/lake-publication-plan"
+          started=$SECONDS
+          if [ -s "$PLAN/artifacts.curl" ]; then
+            curl --parallel --parallel-max 50 --fail-early --fail --silent --show-error \
+              --retry 2 --retry-all-errors --max-time 120 \
+              --aws-sigv4 aws:amz:auto:s3 --user "$KEY" --request PUT \
+              --header 'Content-Type: application/vnd.reservoir.artifact' \
+              --config "$PLAN/artifacts.curl"
+          fi
+          curl --fail --silent --show-error --retry 2 --retry-all-errors --max-time 120 \
+            --aws-sigv4 aws:amz:auto:s3 --user "$KEY" --request PUT \
+            --header 'Content-Type: application/vnd.reservoir.outputs+json-lines' \
+            --upload-file "$PLAN/outputs.jsonl" "$(cat "$PLAN/map-url")"
+          echo "Lake publication upload seconds: $((SECONDS - started))"
+
+          echo 'uploaded=true' >> "$GITHUB_OUTPUT"
+          echo "::notice::uploaded the Lake cache for $REVISION"
+
+      # This separate, key-free step uses the workflow-pinned public-map helper;
+      # --expected confirms that the FULL map, not the upload subset, is public.
+      - name: Confirm the exact revision map on the public endpoint
+        id: confirm
+        if: ${{ steps.upload.outputs.uploaded == 'true' }}
+        env:
+          PUBLIC_REVISION_ENDPOINT: ${{ vars.LAKE_CACHE_REVISION_ENDPOINT_PUBLIC }}
+          ELAN_TOOLCHAIN: ${{ steps.toolchain.outputs.name }}
+          REVISION: ${{ inputs.revision }}
+        run: |
+          set -euo pipefail
+          observed=0
+          for attempt in 1 2 3 4 5 6; do
+            if python3 publisher-tools/tauceti_tools/assets/scripts/lake_cache_probe.py --repo "$GITHUB_REPOSITORY" \
+                --expected "$RUNNER_TEMP/lake-publication-plan/outputs.jsonl" \
+                "$PUBLIC_REVISION_ENDPOINT" "$ELAN_TOOLCHAIN" "$REVISION"; then
+              observed=1
+              break
+            fi
+            echo "::warning::published revision map is not publicly readable yet (attempt $attempt/6)"
+            [ "$attempt" = 6 ] || sleep 10
+          done
+          [ "$observed" = 1 ] || { echo "::error::the published revision map did not become publicly readable"; exit 1; }
+          echo 'published=true' >> "$GITHUB_OUTPUT"
+          echo "::notice::published and confirmed the Lake cache for $REVISION"
+
+      - name: Report whether publication was confirmed
+        id: result
+        if: ${{ always() }}
+        env:
+          CONFIRMED: ${{ steps.confirm.outputs.published }}
+        run: |
+          if [ "$CONFIRMED" = true ]; then
+            echo 'published=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'published=false' >> "$GITHUB_OUTPUT"
+          fi
+
+      # Use the trusted planner's upload subset after the secret-bearing step.
+      # Payload size includes the full map; it is not measured network traffic.
+      - name: Observe publication volume (statistics only)
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 1
+        env:
+          UPLOADED: ${{ steps.upload.outputs.uploaded }}
+          CONFIRMED: ${{ steps.confirm.outputs.published }}
+        run: |
+          python3 publisher-tools/tauceti_tools/assets/scripts/ci_publication_observation.py \
+            --plan "$RUNNER_TEMP/lake-publication-plan" --out "$RUNNER_TEMP/ci-publication.json"
+
+      - name: Upload publication observations
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-publication-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/ci-publication.json
+          if-no-files-found: warn
+          retention-days: 30

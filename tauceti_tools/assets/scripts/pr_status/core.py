@@ -42,7 +42,7 @@ def automatic_bump(pr, *, repo=None):
     bot = author.get("type") == "Bot" or author.get("is_bot") is True
     return ((repo or REPO) == "TauCetiProject/TauCeti" and bot
             and full_name == "TauCetiProject/TauCeti"
-            and (head.get("ref") or pr.get("headRefName", "")).startswith("bump-mathlib/"))
+            and (head.get("ref") or pr.get("headRefName", "")).startswith(("bump-mathlib/", "bump-dependencies/")))
 
 SCOREBOARD_MARKER = "<!--tauceti-scoreboard-->"
 # Greedy `\{.*\}` (with re.S) so a meta object with a nested `"states": {...}` is captured whole: a

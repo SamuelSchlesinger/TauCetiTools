@@ -40,7 +40,7 @@ import pathlib
 import re
 import sys
 
-ROOT = pathlib.Path(__file__).resolve().parent.parent
+ROOT = pathlib.Path.cwd()
 ROOT_MANIFEST = ROOT / "lake-manifest.json"
 ROOT_TOOLCHAIN = ROOT / "lean-toolchain"
 WEB_MANIFEST = ROOT / "web/lake-manifest.json"

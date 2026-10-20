@@ -13,8 +13,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
-from tauceti_worker.github_transport import atomic
-from tauceti_worker.paths import ensure_ssl_cert_file
+from tauceti_tools.system import atomic
+from tauceti_tools.system import ensure_ssl_cert_file
 
 
 def health(environment):

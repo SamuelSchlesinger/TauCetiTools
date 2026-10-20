@@ -115,10 +115,21 @@ class Project:
         cache = self.service("cache")
         state = self.service("github_state")
         return {
+            **{
+                f"TAUCETI_{role.upper()}_NAME": value.split("/")[1]
+                for role in ("content", "roadmap", "review", "data", "ci", "claims")
+                for value in [self.repos.get(role, "/")]
+            },
+            **{
+                f"TAUCETI_{role.upper()}_OWNER": value.split("/")[0]
+                for role in ("content", "roadmap", "review", "data", "ci", "claims")
+                for value in [self.repos.get(role, "/")]
+            },
             "TAUCETI_REPO": self.content,
             "TAUCETI_ROADMAP_REPO": self.repos["roadmap"],
             "TAUCETI_REVIEW_REPO": review.get("repo", "TauCetiProject/TauCetiReview"),
             "TAUCETI_RUBRICS_REPO": self.repos.get("review", review.get("repo", "TauCetiProject/TauCetiReview")),
+            "TAUCETI_RUBRICS": json.dumps(self.raw.get("review", {}).get("rubrics", [])),
             "TAUCETI_REVIEW_REF": review.get("ref", ""),
             "TAUCETI_RUBRICS_REF": self.raw.get("review", {}).get("rubrics_ref", review.get("ref", "")),
             "TAUCETI_DATA_REPO": self.repos.get("data", ""),
@@ -135,11 +146,18 @@ class Project:
             "TAUCETI_PROGRESS_REF": progress.get("ref", ""),
             "TAUCETI_DOCS_URL": self.raw.get("publication", {}).get("docs_url", ""),
             "TAUCETI_DOCS_REF": self.raw.get("publication", {}).get("docs_ref", "origin/docgen"),
+            "TAUCETI_ZULIP_SITE": self.raw.get("publication", {}).get("zulip_site", ""),
+            "TAUCETI_ZULIP_CHANNEL": self.raw.get("publication", {}).get("zulip_channel", ""),
+            "TAUCETI_ZULIP_TOPIC": self.raw.get("publication", {}).get("zulip_topic", ""),
             "TAUCETI_GITHUB_STATE_URL": state.get("url", "") if state.get("mode") != "off" else "",
             "TAUCETI_CACHE_DOMAIN": cache.get("domain", "") if cache.get("mode") != "off" else "",
             "TAUCETI_CACHE_SERVICE": cache.get("name", self.key) if cache.get("mode") != "off" else "",
             "TAUCETI_CACHE_ARTIFACT_URL": cache.get("artifact_url", "") if cache.get("mode") != "off" else "",
             "TAUCETI_CACHE_REVISION_URL": cache.get("revision_url", "") if cache.get("mode") != "off" else "",
+            "TAUCETI_BORS_URL": self.service("bors").get("url", "")
+            if self.service("bors").get("mode") != "off"
+            else "",
+            "TAUCETI_BORS_REPOSITORY_ID": str(self.service("bors").get("repository_id", "")),
             "TAUCETI_UPSTREAMS": json.dumps(self.raw.get("upstreams", [])),
         }
 
@@ -149,7 +167,21 @@ def parse(data: bytes, source: str = "") -> Project:
         raw = tomllib.loads(data.decode("utf-8"))
     except (ValueError, UnicodeError) as error:
         raise ConfigError(f"Invalid TOML in {source}: {error}") from error
-    allowed = {"schema_version", "project", "repositories", "lean", "roadmap", "tools", "review", "merge", "features", "services", "upstreams", "publication", "apps"}
+    allowed = {
+        "schema_version",
+        "project",
+        "repositories",
+        "lean",
+        "roadmap",
+        "tools",
+        "review",
+        "merge",
+        "features",
+        "services",
+        "upstreams",
+        "publication",
+        "apps",
+    }
     unknown = set(raw) - allowed
     if unknown:
         raise ConfigError(f"Unknown configuration sections: {', '.join(sorted(unknown))}")
@@ -167,7 +199,14 @@ def parse(data: bytes, source: str = "") -> Project:
     if not isinstance(branch, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._/-]*", branch) or ".." in branch:
         raise ConfigError("project.branch must be a Git branch name")
     roots = _table(raw, "lean").get("roots", [repos["content"].split("/")[1]])
-    if not isinstance(roots, list) or not roots or any(not isinstance(x, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*", x) for x in roots):
+    if (
+        not isinstance(roots, list)
+        or not roots
+        or any(
+            not isinstance(x, str) or not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)*", x)
+            for x in roots
+        )
+    ):
         raise ConfigError("lean.roots must be a nonempty array of Lean module names")
     for key, value in _table(raw, "roadmap").items():
         if key.endswith("_dir"):
@@ -178,6 +217,18 @@ def parse(data: bytes, source: str = "") -> Project:
         repository(value.get("repo", ""), f"tools.{name}.repo")
         if not isinstance(value.get("ref"), str) or not REF_RE.fullmatch(value["ref"]):
             raise ConfigError(f"tools.{name}.ref must be a full immutable 40-character commit SHA")
+    review = _table(raw, "review")
+    if "rubrics" in review and (
+        not isinstance(review["rubrics"], list)
+        or not review["rubrics"]
+        or any(
+            not isinstance(name, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", name)
+            for name in review["rubrics"]
+        )
+    ):
+        raise ConfigError("review.rubrics must be a nonempty list of rubric names")
+    if "rubrics_ref" in review and not REF_RE.fullmatch(str(review["rubrics_ref"])):
+        raise ConfigError("review.rubrics_ref must be an immutable full commit SHA")
     for name, value in _table(raw, "features").items():
         if not isinstance(value, bool):
             raise ConfigError(f"features.{name} must be true or false")
@@ -212,13 +263,18 @@ def read_source(source: str) -> bytes:
             raise ConfigError("Online configuration must use HTTPS without embedded credentials")
         if url.hostname == "github.com" and "/blob/" in url.path:
             source = "https://raw.githubusercontent.com" + url.path.replace("/blob/", "/", 1)
+        from .system import ensure_ssl_cert_file
+
+        ensure_ssl_cert_file()
         try:
             with urllib.request.urlopen(source, timeout=30) as response:
                 if urllib.parse.urlsplit(response.url).scheme != "https":
                     raise ConfigError("Configuration redirected outside HTTPS")
                 data = response.read(1024 * 1024 + 1)
         except OSError as error:
-            raise ConfigError(f"Cannot fetch {source}: {error}. Check the URL and retry; no fallback project was selected.") from error
+            raise ConfigError(
+                f"Cannot fetch {source}: {error}. Check the URL and retry; no fallback project was selected."
+            ) from error
         if len(data) > 1024 * 1024:
             raise ConfigError("Configuration exceeds 1 MiB")
         return data

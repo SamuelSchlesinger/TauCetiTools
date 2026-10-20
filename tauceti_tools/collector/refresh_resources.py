@@ -48,15 +48,17 @@ def refresh(gh, run_ids=(), max_runs=20, now=None):
                'attempted': 0, 'recorded': 0, 'without_artifacts': 0,
                'already_recorded': 0, 'unverified_producers': 0, 'deferred': None,
                'gaps': [], 'error': None}
-    enricher = collect.Enricher(gh, 'TauCeti')
+    repository = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
+    name = repository.split("/")[1]
+    enricher = collect.Enricher(gh, name)
     try:
         if run_ids:
-            candidates = [gh.get(f'repos/TauCetiProject/TauCeti/actions/runs/{n}') for n in run_ids]
+            candidates = [gh.get(f'repos/{repository}/actions/runs/{n}') for n in run_ids]
             have = set()  # Explicit verification can refresh an existing snapshot.
         else:
             candidates = []
             for workflow in ('pr-build.yml', 'ci.yml'):
-                value = gh.get(f'repos/TauCetiProject/TauCeti/actions/workflows/{workflow}/runs',
+                value = gh.get(f'repos/{repository}/actions/workflows/{workflow}/runs',
                                status='completed', created=f'{collect.iso(since)}..{collect.iso(now)}',
                                per_page=100)
                 items = value['workflow_runs']
@@ -64,7 +66,7 @@ def refresh(gh, run_ids=(), max_runs=20, now=None):
                 receipt['listings'].append({'workflow': workflow, 'returned': len(items),
                                             'total_count': value['total_count'],
                                             'truncated': value['total_count'] > len(items)})
-            have = collect.seen_keys('runs', 'TauCeti', since, now,
+            have = collect.seen_keys('runs', name, since, now,
                                      lambda r: (r['run_id'], r['run_attempt']))
         candidates.sort(key=lambda r: (r['created_at'], r['id']), reverse=True)
         visited = set()
@@ -77,7 +79,7 @@ def refresh(gh, run_ids=(), max_runs=20, now=None):
             if key in have:
                 receipt['already_recorded'] += 1
                 continue
-            if run.get('status') != 'completed' or not producer_sha('TauCeti', run):
+            if run.get('status') != 'completed' or not producer_sha(name, run):
                 receipt['unverified_producers'] += 1
                 continue
             if receipt['attempted'] >= max_runs:
@@ -86,7 +88,7 @@ def refresh(gh, run_ids=(), max_runs=20, now=None):
             receipt['attempted'] += 1
             # This path budgets GitHub requests. Defer the separate Bors API
             # fallback to broad collection rather than bypassing that budget.
-            record = collect.run_record(gh, 'TauCeti', run, enricher, 'all', batch_fallback=False)
+            record = collect.run_record(gh, name, run, enricher, 'all', batch_fallback=False)
             if not any(o.get('coverage') == 'present' for o in record.get('observations', {}).values()):
                 receipt['without_artifacts'] += 1
                 receipt['gaps'].append({'run_id': key[0], 'run_attempt': key[1],
@@ -95,7 +97,7 @@ def refresh(gh, run_ids=(), max_runs=20, now=None):
                 continue
             record['collection_scope'] = scope
             # Persist each completed snapshot; a later request cannot discard it.
-            collect.write_records('runs', 'TauCeti', [record], 'created_at', stamp)
+            collect.write_records('runs', name, [record], 'created_at', stamp)
             receipt['recorded'] += 1
     except (RefreshBudgetExceeded, RateLimitUnavailable) as e:
         receipt['deferred'] = str(e)

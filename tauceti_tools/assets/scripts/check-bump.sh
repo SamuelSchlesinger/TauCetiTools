@@ -79,6 +79,13 @@ for f in lakefile.toml lakefile.lean; do
   fi
 done
 
+# Multi-upstream projects use the same protected configuration and a pure
+# manifest derivation. Keep Tau Ceti's existing Mathlib-only path unchanged.
+if [ -n "${TAUCETI_CONF_SNAPSHOT:-}" ] && [ "${TAUCETI_REPO:-TauCetiProject/TauCeti}" != "TauCetiProject/TauCeti" ]; then
+  exec python3 -m tauceti_tools upstreams guard --conf "$TAUCETI_CONF_SNAPSHOT" \
+    --base "$BASE" --merge-base "$MERGE_BASE" --checkout "$PR"
+fi
+
 # --- helpers ------------------------------------------------------------------
 # owner/repo slug from a github url
 slug() { sed -E 's#^https?://github.com/##; s#/$##; s#\.git$##' <<<"$1"; }

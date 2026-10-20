@@ -6,7 +6,10 @@ import json
 import urllib.parse
 import urllib.request
 
-URL = "https://bors.taucetiproject.org/api/merge-observations"
+REPOSITORY = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
+BRANCH = os.environ.get("TAUCETI_BASE_BRANCH", "main")
+BORS_URL = os.environ.get("TAUCETI_BORS_URL", "https://bors.taucetiproject.org" if REPOSITORY == "TauCetiProject/TauCeti" else "")
+URL = BORS_URL.rstrip("/") + "/api/merge-observations" if BORS_URL else ""
 
 
 def read_json(url, timeout):
@@ -19,16 +22,22 @@ def read_json(url, timeout):
 
 
 def batch_members(batch_id, head):
-    url = f"https://bors.taucetiproject.org/repositories/1/active-batches?base=main&batch_id={int(batch_id)}"
+    repository_id = os.environ.get("TAUCETI_BORS_REPOSITORY_ID", "1" if REPOSITORY == "TauCetiProject/TauCeti" else "")
+    if not BORS_URL or not repository_id:
+        raise RuntimeError("No Bors receipt endpoint configured for this project")
+    query = urllib.parse.urlencode({"base": BRANCH, "batch_id": int(batch_id)})
+    url = f"{BORS_URL.rstrip('/')}/repositories/{int(repository_id)}/active-batches?{query}"
     data = read_json(url, timeout=10)
     batch = data.get("requested_batch")
-    if (data.get("repo") != "TauCetiProject/TauCeti" or data.get("base") != "main"
+    if (data.get("repo") != REPOSITORY or data.get("base") != BRANCH
             or not batch or batch.get("id") != batch_id or batch.get("head_sha") != head):
         raise RuntimeError("batch observation does not match the actual tested head")
     return batch["members"]
 
 
 def read_days(since, until, *, before_request=None, day_done=None, resume=None, page_done=None):
+    if not URL:
+        return
     # R2 pages are immutable prefixes. Resume at the first uncommitted page;
     # replay the last page on the current day to discover newly appended rows.
     day = max(since.date(), dt.date.fromisoformat(resume['day'])) if resume else since.date()

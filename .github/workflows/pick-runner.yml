@@ -1,0 +1,19 @@
+name: pick-runner
+on:
+  workflow_call:
+    inputs:
+      fleet-staging: {type: boolean, default: false}
+    secrets:
+      FLEET_READ_TOKEN: {required: false}
+      APP_ID: {required: false}
+      APP_PRIVATE_KEY: {required: false}
+    outputs:
+      fleet: {value: "false"}
+      github: {value: "true"}
+      busy: {value: "0"}
+      budget: {value: "1"}
+jobs:
+  select:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: 'true'

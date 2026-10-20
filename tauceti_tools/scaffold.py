@@ -114,7 +114,7 @@ def upgrade(project, tool, ref, *, apply=False):
     body, count = re.subn(r'(?m)^ref\s*=\s*"[0-9a-f]{40}"', f'ref = "{ref}"', match[2], count=1)
     if not count:
         raise ConfigError(f"No immutable ref in [tools.{tool}]")
-    updated = text[:match.start()] + match[1] + body + text[match.end():]
+    updated = text[: match.start()] + match[1] + body + text[match.end() :]
     print(f"{tool}: {project.tool(tool).get('ref')} → {ref}; regenerate matching workflow callers in {path.parent}")
     if not apply:
         print("Preview only. Add --apply to edit the local checkout, then review and open a PR.")

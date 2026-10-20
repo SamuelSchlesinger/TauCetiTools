@@ -21,16 +21,29 @@ def producer_sha(repo, run):
     Require the API's pinned main reusable-workflow references in that context.
     The same check handles stored records without trusting payload assertions.
     """
+    content = os.environ.get("TAUCETI_REPO", "TauCetiProject/TauCeti")
+    branch = os.environ.get("TAUCETI_BASE_BRANCH", "main")
     workflow = run.get('path') or run.get('workflow')
     events = {
         '.github/workflows/pr-build.yml': ('repository_dispatch', 'workflow_dispatch'),
         '.github/workflows/ci.yml': ('push', 'workflow_dispatch'),
     }
     repository = (run.get('repository') or {}).get('full_name') or run.get('workflow_repository')
-    if repo != 'TauCeti' or repository not in (None, 'TauCetiProject/TauCeti'):
+    if repo != content.split("/")[1] or repository not in (None, content):
         return None
     if workflow == '.github/workflows/pr-build.yml' and run.get('event') == 'pull_request_target':
-        if repository != 'TauCetiProject/TauCeti':
+        # Generic callers pin the shared harness rather than the project's mutable
+        # default branch. Require GitHub API provenance for that exact Tools pin.
+        from tauceti_tools.project import active
+        project = active()
+        if project and not project.legacy:
+            pin = project.tool("tools")
+            expected = f"{pin.get('repo')}/.github/workflows/pr-build.yml@{pin.get('ref')}"
+            for reference in run.get('referenced_workflows') or []:
+                if reference.get('path') == expected and reference.get('sha') == pin.get('ref'):
+                    return pin['ref']
+            return None
+        if repository != content:
             return None
         sources = set()
         for reference in run.get('referenced_workflows') or []:
@@ -46,8 +59,8 @@ def producer_sha(repo, run):
             sources.add(sha)
         return next(iter(sources)) if len(sources) == 1 else None
     head_repo = (run.get('head_repository') or {}).get('full_name') or run.get('head_repo')
-    if (head_repo == 'TauCetiProject/TauCeti'
-            and run.get('head_branch') == 'main'
+    if (head_repo == content
+            and run.get('head_branch') == branch
             and run.get('event') in events.get(workflow, ())
             and isinstance(run.get('head_sha'), str)
             and re.fullmatch(r'[0-9a-f]{40}', run['head_sha']) is not None):

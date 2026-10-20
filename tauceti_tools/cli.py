@@ -28,13 +28,16 @@ def parser():
     doctor.add_argument("--extras", action="store_true")
     doctor.add_argument("--online", action="store_true", help="Allow explicitly named existing workflow dispatch")
     doctor.add_argument("--workflow", help="Existing workflow_dispatch workflow to run with --online")
+    doctor.add_argument(
+        "--field", action="append", default=[], help="Existing workflow input NAME=VALUE; used with --online"
+    )
     doctor.add_argument("--check")
     doctor.add_argument("--fix")
     doctor.add_argument("--apply", action="store_true")
     doctor.add_argument("--json", action="store_true")
     upgrade = sub.add_parser("upgrade")
     upgrade.add_argument("--apply", action="store_true")
-    upgrade.add_argument("--tool", choices=("tools", "review", "progress"), required=True)
+    upgrade.add_argument("--tool", choices=("tools", "review", "progress", "bors"), required=True)
     upgrade.add_argument("--ref", required=True)
     script = sub.add_parser("script")
     script.add_argument("name")
@@ -49,6 +52,18 @@ def parser():
     apps.add_argument("action", choices=("manifest",))
     apps.add_argument("--role", choices=("automation", "claims", "collector", "bors", "github-state"), required=True)
     apps.add_argument("--output", type=Path, required=True)
+    neon = sub.add_parser("neon", help="Operator-only approved downstream database administration")
+    neon.add_argument("action", choices=("provision", "inspect", "rotate", "handover"))
+    neon.add_argument("--registry", type=Path, required=True)
+    neon.add_argument("--token-file", type=Path, required=True)
+    neon.add_argument("--output", type=Path)
+    neon.add_argument("--apply", action="store_true")
+    upstreams = sub.add_parser("upstreams", help="Inspect consistent forward dependency targets")
+    upstreams.add_argument("action", choices=("inspect", "update", "guard"))
+    upstreams.add_argument("--checkout", type=Path, default=Path.cwd())
+    upstreams.add_argument("--base", type=Path)
+    upstreams.add_argument("--merge-base", type=Path)
+    upstreams.add_argument("--apply", action="store_true")
     return p
 
 
@@ -78,8 +93,25 @@ def main(argv=None):
 
             return run_script(args.name, args.args)
         if not source:
-            raise ConfigError("Pass --conf PATH_OR_URL. To start: tauceti-tools init --repo OWNER/PROJECT --owner-login HUMAN")
+            raise ConfigError(
+                "Pass --conf PATH_OR_URL. To start: tauceti-tools init --repo OWNER/PROJECT --owner-login HUMAN"
+            )
         project = load(source)
+        if args.command == "upstreams":
+            from .upstreams import guard, update
+
+            if args.action == "guard":
+                if not args.base or not args.merge_base:
+                    raise ConfigError("upstreams guard requires --base, --merge-base and --checkout")
+                guard(project, args.base, args.merge_base, args.checkout)
+            else:
+                update(project, args.checkout, apply=args.action == "update" and args.apply)
+            return 0
+        if args.command == "neon":
+            from .neon import run
+
+            run(project, args)
+            return 0
         if args.command == "materialize":
             from .templates import materialize
 
@@ -88,11 +120,15 @@ def main(argv=None):
         if args.command == "config":
             if args.action == "refresh":
                 path = save_snapshot(source)
-                print(f"Saved {path}. Restart the worker with --conf {path} to adopt it; running rounds retain their current configuration.")
+                print(
+                    f"Saved {path}. Restart the worker with --conf {path} to adopt it; running rounds retain their current configuration."
+                )
             elif args.action == "environment":
                 bootstrap(["--conf", source])
                 env = project.environment()
-                env.update({key: os.environ[key] for key in ("TAUCETI_CONF", "TAUCETI_CONF_SOURCE", "TAUCETI_CONF_SNAPSHOT")})
+                env.update(
+                    {key: os.environ[key] for key in ("TAUCETI_CONF", "TAUCETI_CONF_SOURCE", "TAUCETI_CONF_SNAPSHOT")}
+                )
                 if args.github_env:
                     with args.github_env.open("a") as output:
                         for key, value in env.items():
@@ -120,8 +156,15 @@ def main(argv=None):
                     return 0
             if args.online:
                 if not args.workflow:
-                    raise ConfigError("--online requires --workflow NAME: select an existing workflow with workflow_dispatch")
-                subprocess.run(["gh", "workflow", "run", args.workflow, "--repo", project.content, "--ref", project.branch], check=True)
+                    raise ConfigError(
+                        "--online requires --workflow NAME: select an existing workflow with workflow_dispatch"
+                    )
+                dispatch = ["gh", "workflow", "run", args.workflow, "--repo", project.content, "--ref", project.branch]
+                for value in args.field:
+                    if "=" not in value:
+                        raise ConfigError("--field requires NAME=VALUE")
+                    dispatch.extend(["--field", value])
+                subprocess.run(dispatch, check=True)
             findings = diagnose(project, extras=args.extras)
             if args.check:
                 findings = [f for f in findings if f.id == args.check]
@@ -130,7 +173,11 @@ def main(argv=None):
             render(findings, json_output=args.json)
             bad = any(f.status in ("failed", "unknown") for f in findings)
             if not args.json:
-                print("Core setup needs attention." if bad else "Core configured; pending functional checks are listed above.")
+                print(
+                    "Core setup needs attention."
+                    if bad
+                    else "Core configured; pending functional checks are listed above."
+                )
                 if not args.extras:
                     print(f"Extras not checked. Continue: tauceti-tools doctor --conf {source} --extras")
             return 1 if bad else 0
@@ -149,7 +196,9 @@ def main(argv=None):
             if args.output.exists():
                 raise ConfigError(f"Refusing to overwrite {args.output}")
             args.output.write_text(json.dumps(app_manifest(project, args.role), indent=2) + "\n")
-            print(f"App manifest: {args.output}. See the manual for manifest registration and the complete manual form fields.")
+            print(
+                f"App manifest: {args.output}. See the manual for manifest registration and the complete manual form fields."
+            )
             return 0
     except (ConfigError, ValueError, OSError, subprocess.CalledProcessError) as error:
         print(f"tauceti-tools: {error}", file=sys.stderr)

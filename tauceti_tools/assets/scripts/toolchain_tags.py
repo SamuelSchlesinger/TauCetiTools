@@ -110,7 +110,7 @@ def release_of_toolchain(toolchain):
 # --- this repository ---------------------------------------------------------
 
 def git(*args, check=True):
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    root = os.getcwd()
     out = subprocess.run(("git", "-C", root) + args, capture_output=True, text=True)
     if check and out.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {out.stderr.strip()}")

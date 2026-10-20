@@ -31,7 +31,10 @@ class ProjectTests(unittest.TestCase):
             bootstrap(["--conf", str(config)])
             saved = Path(os.environ["TAUCETI_CONF_SNAPSHOT"])
             config.write_text(initial_configuration("two/Project", "human"))
-            child = subprocess.check_output([sys.executable, "-c", "from tauceti_tools.project import bootstrap; print(bootstrap([]).content)"], text=True)
+            child = subprocess.check_output(
+                [sys.executable, "-c", "from tauceti_tools.project import bootstrap; print(bootstrap([]).content)"],
+                text=True,
+            )
             self.assertEqual(child.strip(), "one/Project")
             self.assertIn('content = "one/Project"', saved.read_text())
 

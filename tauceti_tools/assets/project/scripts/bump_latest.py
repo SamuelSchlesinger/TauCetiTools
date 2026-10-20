@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-import os
-import subprocess
+"""Compatibility entrypoint; implementation is pinned through TauCetiTools."""
 import sys
-raise SystemExit(subprocess.call(["tauceti-tools", "script", 'bump_latest.py', *sys.argv[1:]]))
+from tauceti_tools.templates import import_shared, run_script
+
+if __name__ == "__main__":
+    raise SystemExit(run_script('bump_latest.py', sys.argv[1:]))
+else:
+    implementation = import_shared('bump_latest.py', __name__)
+    globals().update(vars(implementation))
+    sys.modules[__name__] = implementation
