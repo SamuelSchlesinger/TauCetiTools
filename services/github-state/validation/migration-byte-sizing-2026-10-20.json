@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "verified_at": "2026-10-20T18:35:02.439Z",
+  "scope": "component query diagnostic in native workerd SQLite; not end-to-end migration throughput or the public-read latency gate",
+  "runtime": {
+    "workerd": "1.20261006.1",
+    "miniflare": "5.20261006.1-alpha",
+    "node": "24.20.0",
+    "compatibility_date": "2026-10-11"
+  },
+  "sqlite_octet_length_supported": true,
+  "fixture": {
+    "rows": 1000,
+    "text_bytes_per_row": 65536,
+    "expected_equal_total_bytes": 65536000
+  },
+  "method": {
+    "warmup_per_query": 3,
+    "samples_per_query": 10,
+    "order": "alternating",
+    "measurement": "Node wall time for native dispatch through response headers; returned byte totals checked for every sample"
+  },
+  "queries": {
+    "cast": "SELECT SUM(length(CAST(value AS BLOB))) bytes FROM values_table",
+    "octets": "SELECT SUM(octet_length(value)) bytes FROM values_table"
+  },
+  "results": {
+    "cast": {
+      "samples": 10,
+      "p50_ms": 7.639002000000005,
+      "p95_ms": 9.958158999999966
+    },
+    "octets": {
+      "samples": 10,
+      "p50_ms": 0.912052000000017,
+      "p95_ms": 1.9035620000000222
+    }
+  },
+  "samples_ms": {
+    "cast": [
+      9.958158999999966,
+      9.12500399999999,
+      8.501349999999945,
+      8.038273000000004,
+      7.505453999999986,
+      7.639002000000005,
+      7.5518129999999815,
+      7.547256000000004,
+      7.630920000000003,
+      7.730727999999999
+    ],
+    "octets": [
+      1.9035620000000222,
+      1.1951420000000326,
+      1.0433559999999602,
+      0.912052000000017,
+      0.7447439999999688,
+      0.7673570000000041,
+      1.4091690000000199,
+      0.7577139999999645,
+      0.6919650000000388,
+      1.5355260000000044
+    ]
+  },
+  "github_reference_calls": 0,
+  "generator": "node scripts/benchmark-migration-bytes.mjs",
+  "native_correctness_coverage": "tests/migration.test.mjs: UTF-8 page boundary, oversized row, NULL, BLOB and exact scalar encoding"
+}
