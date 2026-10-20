@@ -1,5 +1,5 @@
 import { Env, EventPointer, Repository, digest, parseGitHub, stub, CI_EVENTS, repositories } from './protocol';
-import { readMigration } from './migration';
+import { blocksWrites, holdsRetention, readMigration } from './migration';
 import { classify, log } from './storage';
 import { policy, protectedObject } from './retention';
 
@@ -25,7 +25,7 @@ export const storageKey = (repo: string) => `control/${repo}/storage.json`;
 // supersedes the report, and the conditional write rejects a concurrent probe.
 export async function noteRepositoryFull(env: Env, repo: string, source: string, started: number): Promise<void> {
   const object = await env.ARCHIVE.get(storageKey(repo)), marker: any = object ? await object.json() : null;
-  if (marker?.state === 'full' || marker?.state === 'writable' && Number(marker.verified_at) >= started) return;
+  if (marker?.backend==='postgres' && marker?.state==='superseded' || marker?.state === 'full' || marker?.state === 'writable' && Number(marker.verified_at) >= started) return;
   const cooldown = marker?.state === 'writable' && Date.now() - marker.verified_at < 3600000 ? {probe_attempts:marker.probe_attempts,last_probe_at:marker.last_probe_at,next_probe_at:marker.next_probe_at} : {};
   await env.ARCHIVE.put(storageKey(repo), JSON.stringify({ state: 'full', since: started, source, ...cooldown }), {onlyIf:object ? {etagMatches:object.etag} : {etagDoesNotMatch:'*'}});
 }
@@ -34,11 +34,13 @@ export function backoff(attempts: number): number { return Math.min(600, 5 * 2 *
 export async function storageState(env: Env, repo: Repository): Promise<any> {
   // This record describes the old SQLite file, not the selected remote store.
   if(env.REPOSITORY_BACKEND==='postgres')return null;
-  return env.ARCHIVE.get(storageKey(repo.id)).then(o => o ? o.json() : null);
+  if(['test','production'].includes(env.MIGRATION_ENVIRONMENT || '') && (await readMigration(env.ARCHIVE,repo.id))?.cutover?.target_active)return null;
+  const marker:any=await env.ARCHIVE.get(storageKey(repo.id)).then(o=>o?o.json():null);
+  return marker?.backend==='postgres' && marker?.state==='superseded'?null:marker;
 }
 export async function ingressMode(env: Env, repo: Repository): Promise<{ mode: 'apply' | 'parked'; reason?: string; at?: number }> {
-  const migration=env.MIGRATION_ENVIRONMENT==='test'?await readMigration(env.ARCHIVE,repo.id):null;
-  if(migration && migration.phase!=='abandoned') return {mode:'parked',reason:'migration'};
+  const migration=['test','production'].includes(env.MIGRATION_ENVIRONMENT || '')?await readMigration(env.ARCHIVE,repo.id):null;
+  if(blocksWrites(migration)) return {mode:'parked',reason:'migration'};
   const object = await env.ARCHIVE.get(controlKey(repo.id));
   return object ? object.json() : { mode: 'apply' };
 }
@@ -88,7 +90,7 @@ export async function release(env: Env, repo: Repository, pointer: EventPointer)
 // pointer is removed only after a committed receipt, including across resets.
 export async function drain(env: Env, repo: Repository, options: { limit?: number; held?: boolean; cursor?: string; deadline?: number } = {}): Promise<any> {
   if ((await ingressMode(env, repo)).mode === 'parked') return { replayed: 0, stopped: 'parked' };
-  if (Date.now() >= (options.deadline || Infinity)) return {replayed:0,remaining:true,cursor:options.cursor};
+  if (Date.now() >= (options.deadline || Infinity)) return {replayed:0,remaining:true,cursor:options.cursor,stopped:'deadline'};
   const prefix = `parked/${repo.id}/${options.held ? 'held' : 'pointers'}/`;
   const page = await env.ARCHIVE.list({ prefix, limit: Math.min(Math.max(1, options.limit || 25), 100), startAfter: options.cursor });
   let replayed = 0, failed = 0, stopped: string | undefined, last_error: string | undefined, next_retry: number | undefined;
@@ -141,6 +143,7 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
     await Promise.all(group.map(object => replay(object).catch(error => { failed++; last_error = classify(error); log('pointer_maintenance_failed', { key: object.key, reason: last_error }); })));
     visited += group.length;
   }
+  if(!stopped && visited<page.objects.length)stopped='deadline';
   return { replayed, failed, last_error, next_retry, cursor: visited < page.objects.length || page.truncated ? (page.objects[visited-1]?.key || options.cursor) : undefined, remaining: Boolean(stopped) || page.truncated || replayed < page.objects.length, ...(stopped ? { stopped } : {}) };
 }
 
@@ -241,9 +244,9 @@ export async function maintainRaw(env: Env, targets: (payload: any, event: strin
       if(expired.length) {
         let frozen=false;
         for(const repo of repositories(env)) {
-          if(env.MIGRATION_ENVIRONMENT==='test') {
+          if(['test','production'].includes(env.MIGRATION_ENVIRONMENT || '')) {
             const migration=await readMigration(env.ARCHIVE,repo.id);
-            if(migration && migration.phase!=='abandoned') {frozen=true;break;}
+            if(holdsRetention(migration)) {frozen=true;break;}
           }
           const control=await env.ARCHIVE.get('control/'+repo.id+'/retention-policy.json').then(o=>o?.json<any>());
           if(control) {const p=policy(control);if(p.disabled.includes('raw_webhooks') || p.pinned.includes('raw_webhooks')) {frozen=true;break;}}
@@ -282,6 +285,7 @@ export async function maintainIngress(env: Env, repo: Repository): Promise<void>
         const pass = await drain(env, repo, { limit: 50, held: lane === 'held', cursor: state[lane + '_cursor'], deadline });
         state[lane + '_cursor'] = pass.cursor;
         state[lane + '_last_pass'] = pass;
+        if(!pass.cursor && !pass.stopped)state[lane + '_pass_completed_at']=Date.now();
         if(pass.stopped || !pass.cursor) break;
       }
     }

@@ -190,7 +190,7 @@ BASELINE_REF=<pre-change-TauCetiTools-commit> npm run benchmark:postgres
 For the original Worker baseline, set `BASELINE_REPOSITORY` to a TauCetiWorker
 checkout and `BASELINE_REF=5d5f4b870`. The service now lives in TauCetiTools; its
 source migration/export protocol and frozen-mirror recovery behavior remain in
-place. Source-export preflight still blocks target import and production cutover.
+place. The [migration runbook](../../docs/github-state-migration.md) defines the supervised target import and production acceptance gates.
 
 The harness seeds 1,200 PRs and 5,000 comments, checks equivalent response data,
 warms both implementations, and measures five fixed trials of 1,200 samples per workload/backend
@@ -244,3 +244,11 @@ selection, rollback requires preserving/reconciling PostgreSQL writes and parked
 inputs with an explicitly chosen authoritative store. Switching a variable or
 routing back to the old SQLite object is not a lossless rollback. Never reset an
 authoritative repository or bootstrap GitHub to recover database capacity.
+
+The S2 test branch is `br-icy-feather-b54h8dxh` (`test-s2`), endpoint
+`ep-shy-cherry-b5nnow2x`. Its live PostgreSQL limit, credential isolation and full
+migrated-fixture restore are recorded in `validation/neon-s2-capacity-2026-10-20.json`
+and `validation/migration-restore-2026-10-20.json`. The original test branch remains
+retained with automatic idle suspension; its legacy compute reported a 3 GiB
+engine limit despite the project quota. S2 checks the live engine limit before
+freezing.

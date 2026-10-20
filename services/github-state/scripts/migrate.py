@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Resume a fenced S2 source export (no GitHub queries).
+"""Start or inspect a supervised S2 migration (no GitHub queries).
 
-Defaults to read-only preflight. Production freeze/import/switch remain disabled
-until S1 and its deployed acceptance evidence are integrated. Receipts contain
-identities, checkpoints and checksums; never SQL rows or connection strings.
+Defaults to read-only preflight. Start requires deployed acceptance evidence, a
+standby target and explicit environment selection. Cron owns crash recovery.
+Receipts contain identities, checkpoints and checksums; never SQL rows or connection strings.
 """
 
 from __future__ import annotations
@@ -22,6 +22,37 @@ from tauceti_tools.system import ensure_ssl_cert_file  # noqa: E402
 ERROR_CODES = frozenset(
     [
         "invalid_generation",
+        "migration_acceptance_missing",
+        "migration_acceptance_stale",
+        "migration_acceptance_incomplete",
+        "migration_acceptance_changed",
+        "migration_application_grants_missing",
+        "migration_application_role_unsafe",
+        "migration_capacity_restore_unverified",
+        "migration_environment_mismatch",
+        "migration_forward_recovery_required",
+        "migration_freeze_lease_expired",
+        "migration_health_mismatch",
+        "migration_retention_not_pinned",
+        "migration_shadow_mismatch",
+        "migration_shadow_unavailable",
+        "migration_shadow_queries_missing",
+        "migration_source_fence_lost",
+        "migration_target_configuration",
+        "migration_target_data_mismatch",
+        "migration_target_identity_mismatch",
+        "migration_target_not_empty",
+        "migration_target_owner_mismatch",
+        "migration_target_schema_mismatch",
+        "migration_target_unavailable",
+        "migration_latency_regression",
+        "migration_queue_dlq_unavailable",
+        "migration_retention_policy_invalid",
+        "migration_constraint_incompatible",
+        "migration_shadow_request_budget",
+        "migration_held_input_pending",
+        "migration_cell_incompatible",
+        "migration_rowid_sequence_exhausted",
         "invalid_target_identity",
         "migration_apply_required",
         "migration_blob_missing",
@@ -32,6 +63,7 @@ ERROR_CODES = frozenset(
         "migration_control_corrupt",
         "migration_deployment_identity_required",
         "migration_drain_pending",
+        "migration_dispatch_drain_unavailable",
         "migration_frozen",
         "migration_generation_abandoned",
         "migration_generation_used",
@@ -51,6 +83,10 @@ ERROR_CODES = frozenset(
         "migration_staging_blob_missing",
         "migration_storage_failure",
         "migration_table_manifest_mismatch",
+        "migration_column_manifest_mismatch",
+        "migration_observation_not_ready",
+        "migration_receipt_conflict",
+        "migration_staging_reset_mismatch",
         "migration_target_backend_unavailable",
         "repository_unconfigured",
         "repository_not_allowed",
@@ -109,11 +145,12 @@ def main():
     parser.add_argument("--repository", default="TauCetiProject/TauCeti")
     parser.add_argument("--generation", help="explicit UUID v4; reuse it after interruption")
     parser.add_argument("--target", help="opaque project/branch/database label; never a DSN")
-    parser.add_argument("--apply", action="store_true", help="perform the selected operation (test export only)")
+    parser.add_argument("--apply", action="store_true", help="perform the selected operation (requires deployed acceptance)")
     parser.add_argument("--limit", type=int, default=100)
+    parser.add_argument("--retention-policy", type=Path, help="explicit post-observation retention policy JSON")
     parser.add_argument("--steps", type=int, default=1, help="bounded export/verification steps per invocation")
     parser.add_argument(
-        "command", choices=["preflight", "status", "freeze", "resume", "abandon"], nargs="?", default="preflight"
+        "command", choices=["preflight", "status", "start", "freeze", "resume", "abandon", "finish-observation"], nargs="?", default="preflight"
     )
     args = parser.parse_args()
     options = {}
@@ -135,24 +172,35 @@ def main():
         options["credentials_dir"] = args.credentials_dir.expanduser()
     if not 1 <= args.limit <= 250 or not 1 <= args.steps <= 10000:
         parser.error("limit must be 1..250 and steps 1..10000")
-    mutating = args.command in {"freeze", "resume", "abandon"} and args.apply
+    mutating = args.command in {"start", "freeze", "resume", "abandon", "finish-observation"} and args.apply
     if mutating and (not args.generation or not args.target):
         parser.error("--apply requires --generation and --target")
     body = {"repository": args.repository, "environment": args.environment}
+    if args.generation:
+        body["generation"] = args.generation
+    if args.target:
+        body["target"] = args.target
     if not mutating:
         body["operation"] = "status" if args.command == "status" else "preflight"
     else:
         body.update(
-            operation={"freeze": "freeze", "resume": "step", "abandon": "abandon"}[args.command],
+            operation={"start": "start", "freeze": "freeze", "resume": "step", "abandon": "abandon", "finish-observation": "finish-observation"}[args.command],
             generation=args.generation,
             target=args.target,
             apply=True,
             limit=args.limit,
         )
+    if mutating and args.command == "finish-observation":
+        if not args.retention_policy:
+            parser.error("finish-observation requires an explicit --retention-policy")
+        try:
+            body["retention_policy"] = json.loads(args.retention_policy.read_text())
+        except (OSError, ValueError):
+            parser.error("cannot read retention policy JSON")
     for _ in range(args.steps if mutating and args.command == "resume" else 1):
         result = call(args.environment, body, **options)
         print(json.dumps(result, sort_keys=True), flush=True)
-        if result.get("phase") in {"source_verified", "abandoned"}:
+        if result.get("phase") in {"complete", "abandoned"} or (result.get("phase") == "source_verified" and not result.get("cutover")):
             break
 
 

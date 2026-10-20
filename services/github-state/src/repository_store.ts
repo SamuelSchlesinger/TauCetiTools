@@ -71,6 +71,10 @@ export const columns:Record<string,string[]>={
   survey_hydrated:['number','contract'],survey_dirty:['number'],survey_hydration_failures:['number','retry_at'],
   repair_metrics:['at','event','lane','operation','value'],query_metrics:['operation','coverage','requests','last_at']
 };
+// Shared import/read contract. The activity number columns intentionally stay
+// TEXT in PostgreSQL while SQLite's source uses INTEGER there.
+const integerColumns=new Set(['observed','revision','tombstone','complete','verified','received','at','priority','due','started','page','attempt','dirty','generation','start_generation','lease_until','requested_at','created_at','retry_at','requests','last_at']);
+export function integerColumn(table:string,name:string):boolean {return integerColumns.has(name) || table==='repair_metrics' && name==='value';}
 export function schemaName(repository:string):string {
   if(!/^[0-9]{1,50}$/.test(repository)) throw new Error('Invalid repository identity');
   return 'github_state_'+repository;
@@ -121,13 +125,14 @@ export class PostgresStore implements RepositoryStore {
 
   private http;
   private writer=new SerialLane();
-  constructor(private url:string,repository:string,private generation:string,private client?:Client,private diagnostics:{connections:number,queries:number,lastConnection?:number}={connections:0,queries:0},private connectionState?:ConnectionState) {
+  constructor(private url:string,repository:string,private generation:string,private client?:Client,private diagnostics:{connections:number,queries:number,lastConnection?:number}={connections:0,queries:0},private connectionState?:ConnectionState,private onQuery?:()=>void) {
     this.schema=schemaName(repository);
     try{this.http=neon(url);}catch{throw new StoreUnavailable();}
   }
   get transactional():boolean {return Boolean(this.client);}
   private async run<T>(action:()=>Promise<T>,connection=this.connectionState):Promise<T> {
     if(connection?.error)throw connection.error;
+    this.onQuery?.();
     try{return await action();}catch(error){
       if(connection?.error)throw connection.error;
       if(error instanceof StoreFenced || error instanceof StoreUnavailable)throw error;

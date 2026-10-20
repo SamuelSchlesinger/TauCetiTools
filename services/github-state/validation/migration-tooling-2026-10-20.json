@@ -1,0 +1,67 @@
+{
+  "version": 1,
+  "scope": "S2 local tooling acceptance; not production cutover authorization",
+  "source_schema": 5,
+  "target_schema": 1,
+  "checks": {
+    "python_package": {
+      "passed": 12,
+      "failed": 0
+    },
+    "sqlite_service": {
+      "passed": 203,
+      "failed": 0,
+      "skipped": 51
+    },
+    "isolated_neon_contracts": {
+      "passed": 101,
+      "failed": 0,
+      "skipped": 1
+    },
+    "migration_fixtures": {
+      "passed": 12,
+      "failed": 0
+    }
+  },
+  "migration_fixture_coverage": [
+    "every source table and empty table manifests",
+    "whole installation request drain, including reference requests between upstream calls",
+    "signed 64-bit rowids and exact large identifiers/timestamps",
+    "incomplete collections, tombstones and R2 references",
+    "preserved retry/quota cooldowns, attempts and generations",
+    "expired execution leases and expired partial staging checkpoints",
+    "restart and lost response during import and validation",
+    "lost PostgreSQL activation response with expired controller lease",
+    "lease expiry before activation and still-full source recovery",
+    "stored-only shadows, old cursors and unchanged 304 behavior",
+    "input arriving during freeze beyond queue retry budget",
+    "crash after SQL event commit before permanent R2 receipt",
+    "crash after parked-pointer deletion before acknowledgement",
+    "crash during final release receipt publication",
+    "reordered historical columns imported by archived names",
+    "durable local selection before and after commit, cold R2 failure and retired migration bindings",
+    "separate authenticated application role and duplicate privileged URL rejection",
+    "missing/inaccessible inactive target quarantine and activation-intent forward recovery",
+    "REAL/BLOB/NUL preflight before freeze",
+    "stored shadow detects different or unavailable target data",
+    "explicit observation release and immutable recovered receipts",
+    "numeric keyset verification across 9/10/99/100 row boundaries",
+    "edge-weakened ETags preserve public conditional reads",
+    "fresh queue/DLQ observations gate final release; held poison inputs remain durable without indefinitely blocking reconciliation",
+    "missing primary-key constraints and oversized indexed identities rejected before freeze",
+    "real maintainIngress held traversal with future retry deadline and typed completion evidence",
+    "retired migration bindings preserve PostgreSQL ingress despite the retained SQLite full marker",
+    "selected repository generation scopes monitoring observations and retention checkpoints",
+    "request budget exhaustion persists its sanitized failure checkpoint outside the exhausted budget",
+    "a deadline reached before the first held group cannot publish a completed traversal",
+    "application ownership of migration functions is rejected even without schema CREATE"
+  ],
+  "commands": [
+    "python -m unittest discover -s tests -p 'test_*.py'",
+    "npm test",
+    "npm run test:postgres"
+  ],
+  "postgres_credentials": "isolated test roles; supplied privately through environment",
+  "production_cutover_performed": false,
+  "production_acceptance": "requires deployed S0/S1 checks and a generation-bound private receipt"
+}

@@ -1,5 +1,5 @@
-import { Env, EventPointer, Query, Repository, authorize, digest, json, repositories, repository, stub, validSignature, validateQuery, parseGitHub, CI_EVENTS } from './protocol';
-import { readMigration } from './migration';
+import { Env, EventPointer, matchesETag, Query, Repository, authorize, digest, json, repositories, repository, stub, validSignature, validateQuery, parseGitHub, CI_EVENTS } from './protocol';
+import { blocksRepairs, holdsRetention, readMigration } from './migration';
 import { classify, log, requestId } from './storage';
 import { PARK_AFTER_ATTEMPTS, backlog, backoff, drain, maintainIngress, maintainRaw, release, ingressMode, noteRepositoryFull, park, reconcile, setIngressMode, storageState } from './ingress';
 import { prepareQueueMetrics } from './queue_monitoring';
@@ -36,7 +36,7 @@ async function query(req:Request,env:Env,q:Query,request_id:string): Promise<Res
     return json({error:'storage_unavailable',reason:typeof detail.error==='string'?detail.error:'status_'+response.status,request_id},503);
   }
   const etag=response.headers.get('etag');
-  if (etag && req.headers.get('if-none-match')===etag && !q.cursor) {
+  if (etag && matchesETag(req.headers.get('if-none-match'),etag) && !q.cursor && q.operation!=='progress') {
     const copy:any=await response.clone().json();
     if (copy.status==='ok') return new Response(null,{status:304,headers:{ETag:etag,'Cache-Control':'private, no-cache'}});
   }
@@ -241,6 +241,11 @@ export default {
       if(repo.bors_receipts_url || (repo.name==='TauCetiProject/TauCeti' && env.BORS_ACTIVITY)) ctx.waitUntil(stub(env.REPOSITORIES,repo.id).fetch('https://internal/activity-refresh',{method:'POST'}));
       ctx.waitUntil((async()=>{
         let tick:Response;const started=Date.now();
+        if(['test','production'].includes(env.MIGRATION_ENVIRONMENT || '')) {
+          try {const supervised=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/migration-supervise',{method:'POST'});
+            if(!supervised.ok)log('migration_supervision_failed',{repository:repo.name,status:supervised.status});
+          } catch(error) {log('migration_supervision_failed',{repository:repo.name,reason:classify(error)});}
+        }
         try {tick=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/tick',{method:'POST',body:JSON.stringify({repository:repo.name})});}
         catch(error) {
           if (classify(error)==='storage_full') await noteRepositoryFull(env,repo.id,'tick',started);
@@ -249,7 +254,7 @@ export default {
         const state:any=await tick.json().catch(()=>({}));
         // The delivery audit spends GitHub quota; skip it while the repository
         // cannot store results or ingestion is deliberately parked.
-        if (!tick.ok || state.degraded || (await ingressMode(env,repo)).mode==='parked') {log('delivery_audit_skipped',{repository:repo.name,degraded:Boolean(state.degraded),status:tick.status});return;}
+        if (!tick.ok || state.degraded || (await ingressMode(env,repo)).mode==='parked' || ['test','production'].includes(env.MIGRATION_ENVIRONMENT || '') && blocksRepairs(await readMigration(env.ARCHIVE,repo.id))) {log('delivery_audit_skipped',{repository:repo.name,degraded:Boolean(state.degraded),status:tick.status});return;}
         await stub(env.INSTALLATIONS,repo.installation).fetch('https://internal/audit',{method:'POST',body:JSON.stringify(repo)});
       })().catch(error=>log('scheduled_failed',{repository:repo.name,reason:classify(error)})));
       ctx.waitUntil(maintainIngress(env,repo).catch(error=>log('parked_replay_failed',{repository:repo.name,reason:classify(error)})));
@@ -258,10 +263,10 @@ export default {
     // retains its source. Do not expire active cursors, raw input, staging, or
     // old resource versions underneath an export/observation period.
     const retentionHeld=async()=>{
-      if(env.MIGRATION_ENVIRONMENT!=='test') return false;
+      if(!['test','production'].includes(env.MIGRATION_ENVIRONMENT || '')) return false;
       for(const repo of repositories(env)) {
         const state=await readMigration(env.ARCHIVE,repo.id);
-        if(state && state.phase!=='abandoned') return true;
+        if(holdsRetention(state)) return true;
       }
       return false;
     };
