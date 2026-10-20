@@ -243,9 +243,17 @@ def add_setup_steps(text: str) -> str:
     """Attach shared setup to trusted project checkout steps in small caller workflows."""
     import re
 
-    blocks = list(re.finditer(r"(?m)^      - (?:(?!^      - ).*\n)*", text))
+    blocks = list(
+        re.finditer(
+            r"(?m)^(?P<indent> +)- (?:name:.*|uses: actions/checkout@.*)\n(?:(?P=indent) +.*\n|[ \t]*\n|(?P=indent)#[^\n]*\n)*",
+            text,
+        )
+    )
     for match in reversed(blocks):
         block = match[0]
+        indent = match["indent"]
+        if text[match.end() :].startswith(indent + "- name: Prepare pinned shared tools"):
+            continue
         if "uses: actions/checkout@" not in block:
             continue
         if any(
@@ -264,6 +272,9 @@ def add_setup_steps(text: str) -> str:
 """
         if "path: gate\n" in block:
             step = step.replace("project-directory: .", "project-directory: gate")
+        step = "".join(
+            indent + line[6:] if line.startswith("      ") else line for line in step.splitlines(keepends=True)
+        )
         text = text[: match.end()] + step + text[match.end() :]
     return text
 
