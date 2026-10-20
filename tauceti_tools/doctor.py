@@ -404,7 +404,7 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
 
         for consumer, workflow in (("pr-build", "pr-build.yml"), ("Auto-merge", "auto-merge.yml")):
             runs, error = gh.read(
-                f"repos/{repo}/actions/workflows/{workflow}/runs?branch={project.branch}&status=success&per_page=1",
+                f"repos/{repo}/actions/workflows/{workflow}/runs?event=pull_request_target&status=success&per_page=1",
                 paginate=False,
             )
             candidates = _items(runs, "workflow_runs")
