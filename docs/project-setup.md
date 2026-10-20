@@ -101,7 +101,8 @@ edits take effect on restart or an explicit configuration refresh; they do not i
 
 Initialize the content package with the intended Lean toolchain and Lake dependencies.
 Commit both `lean-toolchain` and `lake-manifest.json`. Set the Lean library root to the
-configuration's `lean.roots`. A project following Tau Ceti's empty-root policy uses a glob
+configuration's `lean.roots`. The supplied build harness currently renders one top-level
+Lean library root. Projects with several roots keep their existing custom build workflow. A project following Tau Ceti's empty-root policy uses a glob
 that builds every source module; its root module does not need individual imports.
 
 For a new Mathlib-based starter, obtain the matching toolchain without guessing its version:

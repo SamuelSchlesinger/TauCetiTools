@@ -245,7 +245,7 @@ def add_setup_steps(text: str) -> str:
             for token in ("head.sha", "headRef", "steps.pr.outputs", "path: pr\n", "path: base\n", "path: mergebase\n")
         ):
             continue
-        if "path:" in block:
+        if "path:" in block and "path: gate\n" not in block:
             continue
         step = """      - name: Prepare pinned shared tools
         uses: __TOOLS_REPO__/.github/actions/setup@__TOOLS_REF__
@@ -254,6 +254,8 @@ def add_setup_steps(text: str) -> str:
           tools-ref: __TOOLS_REF__
           project-directory: .
 """
+        if "path: gate\n" in block:
+            step = step.replace("project-directory: .", "project-directory: gate")
         text = text[: match.end()] + step + text[match.end() :]
     return text
 
