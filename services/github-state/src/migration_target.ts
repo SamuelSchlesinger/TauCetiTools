@@ -3,7 +3,7 @@ import { Client } from '@neondatabase/serverless';
 import { Env, digest } from './protocol';
 import { AdminError, REQUIRED_TABLES } from './storage';
 import { columns, integerColumn, schemaName } from './repository_store';
-import { Migration, Row, Cell, compatibleRows, archiveKey, chain } from './migration';
+import { Migration, Row, Cell, pageRowLimit, compatibleRows, archiveKey, chain } from './migration';
 
 export interface TargetIdentity { identity:string; hostname:string; database:string; application_role:string; migration_role:string }
 export function targetConfig(env:Env):TargetIdentity {
@@ -15,8 +15,10 @@ export function targetConfig(env:Env):TargetIdentity {
   }
   return {identity:value.identity,hostname:value.hostname,database:value.database,application_role:value.application_role,migration_role:value.migration_role};
 }
-async function transaction<T>(env:Env,repo:string,apply:(client:Client,schema:string)=>Promise<T>,url=env.MIGRATION_DATABASE_URL):Promise<T> {
+type MeteredEnv=Env & {migrationConnection?:()=>void};
+async function transaction<T>(env:MeteredEnv,repo:string,apply:(client:Client,schema:string)=>Promise<T>,url=env.MIGRATION_DATABASE_URL):Promise<T> {
   const schema=schemaName(repo);targetConfig(env);
+  env.migrationConnection?.();
   const client=new Client({connectionString:url,connectionTimeoutMillis:10000,query_timeout:20000});
   client.on('error',()=>{}); // The awaited operation reports a sanitized failure.
   try {await client.connect();await client.query('BEGIN');await client.query("SET LOCAL statement_timeout='15s'; SET LOCAL lock_timeout='5s'");const value=await apply(client,schema);await client.query('COMMIT');return value;}
@@ -88,7 +90,7 @@ export async function archivePage(env:Env,state:Migration,name:string,index:numb
   if(!object)throw new AdminError('migration_page_missing');
   const text=await object.text();if(await digest(text)!==object.customMetadata?.sha256)throw new AdminError('migration_page_corrupt');
   const page:Page=JSON.parse(text);
-  if(page.version!==1 || page.table!==name || page.index!==index || !page.rows.length || page.rows.length>250)throw new AdminError('migration_page_corrupt');
+  if(page.version!==1 || page.table!==name || page.index!==index || !page.rows.length || page.rows.length>pageRowLimit(name) || !Array.isArray(page.refs) || page.refs.length>250)throw new AdminError('migration_page_corrupt');
   compatibleRows(name,state.tables[name].columns,page.rows);
   return page;
 }

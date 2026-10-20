@@ -171,7 +171,8 @@ jobs, demand and cooldowns. Daily observational snapshots and the changes journa
 are not used as migration backups.
 
 Pages under `migrations/<repo>/<generation>/<table>/<index>.json` have at most 250
-rows and a 512 KB logical target, allowing one larger row for progress. Cells carry
+rows for source-only exports, or 5,000 rows for supervised cutovers (reduced for
+wide tables), and a 512 KB logical target, allowing one larger row for progress. Cells carry
 their SQLite type and exact string/null value; signed 64-bit integers never cross
 JavaScript as numbers. Text and JSON remain verbatim. The generic source format
 also supports hex blobs and SQLite round-trip REAL strings; the current PostgreSQL
@@ -300,3 +301,12 @@ endpoint is required, stop and perform an independently verified forward recover
 with a new identity and migrated write-owner metadata; ordinary S2 abandonment
 cannot authorize that identity change. The retained SQLite copy may be exposed
 only as an explicitly timestamped emergency read fallback, never as a writer.
+
+For large repositories, `--batch-steps 100 --steps 10000 resume` reduces admin
+round trips. Each request still stops after 20 seconds or its bounded I/O budget;
+cron and the next identical invocation resume the last durable checkpoint.
+Supervised SQL pages contain at most 5,000 rows, 60,000 PostgreSQL parameters,
+512,000 logical value bytes (except a single larger row), and 250 distinct R2
+references. Wide tables reduce the row bound to preserve the parameter limit.
+The legacy source-only export retains its 250-row limit. Page sizes do not affect
+the canonical per-table hash or exact rowid checkpoints.

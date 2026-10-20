@@ -1968,6 +1968,8 @@ export class RepositoryState extends DurableObject<Env> {
     await this.ctx.storage.sync();
   }
   private async cutover(input:any,prior:Migration|null,repo:string):Promise<Response> {
+    const batchSteps=input.batch_steps ?? 1;
+    if(!Number.isSafeInteger(batchSteps) || batchSteps<1 || batchSteps>100)throw new AdminError('migration_step_limit_invalid');
     if(input.environment!==this.env.MIGRATION_ENVIRONMENT || !['test','production'].includes(input.environment))throw new AdminError('migration_environment_mismatch');
     const id=generation(input.generation),target=targetIdentity(input.target);
     if(input.apply!==true)throw new AdminError('migration_apply_required');
@@ -1996,7 +1998,7 @@ export class RepositoryState extends DurableObject<Env> {
       if(state.cutover!.target_active)throw new AdminError('migration_forward_recovery_required');
       state.phase='aborting';state.cutover!.abort_reason='operator_abandoned';await saveMigration(this.env.ARCHIVE,state);
     } else if(!['start','step','preflight'].includes(input.operation))throw new AdminError('migration_operation_invalid');
-    return this.superviseMigration(1);
+    return this.superviseMigration(batchSteps);
   }
   private async shadowMigration(state:Migration,onQuery:()=>void=()=>{}):Promise<void> {
     const record=await this.env.ARCHIVE.get(`control/${state.repository}/migration-acceptance.json`);
@@ -2093,11 +2095,12 @@ export class RepositoryState extends DurableObject<Env> {
     if(!repo)return json({migration:null});
     let io=0;
     const bucket=new Proxy(this.env.ARCHIVE,{get(target,key){const value=Reflect.get(target,key,target);return typeof value==='function'?(...args:any[])=>{if(['get','head','put','list','delete'].includes(String(key)) && ++io>900)throw new AdminError('migration_shadow_request_budget');return value.apply(target,args);}:value;}});
-    const controlEnv={...this.env,ARCHIVE:bucket};
+    const controlEnv={...this.env,ARCHIVE:bucket,migrationConnection:()=>{io+=2;if(io>900)throw new AdminError('migration_shadow_request_budget');}};
     // Reserve room for the next bounded page (up to 250 blob HEADs), target
     // connections and terminal bookkeeping below the platform request limit.
+    // Leave 280 operations: the widest verification step needs 250 HEADs.
     let advanced=false;
-    for(const deadline=Date.now()+20000;steps-->0 && Date.now()<deadline && io<650;) {
+    for(const deadline=Date.now()+20000;steps-->0 && Date.now()<deadline && io<620;) {
       const state=await readMigration(bucket,repo);this.migrationState=state;
       if(!state?.cutover)break;
       if(state.phase==='switching' && advanced)break;
@@ -2110,7 +2113,7 @@ export class RepositoryState extends DurableObject<Env> {
           if(state.phase==='complete' && state.failure){state.failure=null;await saveMigration(bucket,state);}
           break;
         }
-        io+=2;await controllerStep(controlEnv,state,{storage:this.ctx.storage,sql:this.nativeSql,compatibility:async s=>{compatibilityStep(this.nativeSql,s);if(s.phase==='freezing'){s.phase='preflighting';await cutoverPreflight(this.env,s);s.phase='freezing';}},
+        io+=2;await controllerStep(controlEnv,state,{storage:this.ctx.storage,sql:this.nativeSql,compatibility:async s=>{compatibilityStep(this.nativeSql,s);if(s.phase==='freezing'){s.phase='preflighting';await cutoverPreflight(controlEnv,s);s.phase='freezing';}},
           fence:s=>this.fenceMigration(s),assertFence:s=>this.assertMigrationFence(s),verifyStored:async s=>{
             const shadow=Object.create(this) as RepositoryState;shadow.env=controlEnv;
             const before=io,began=Date.now();
