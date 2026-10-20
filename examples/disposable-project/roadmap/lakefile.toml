@@ -1,0 +1,15 @@
+name = "ExampleCetiRoadmap"
+defaultTargets = ["ExampleCetiRoadmap", "Completed"]
+
+[[require]]
+name = "mathlib"
+git = "https://github.com/leanprover-community/mathlib4"
+rev = "master"
+
+[[lean_lib]]
+name = "ExampleCetiRoadmap"
+globs = ["ExampleCetiRoadmap.*"]
+
+[[lean_lib]]
+name = "Completed"
+globs = ["Completed.+"]

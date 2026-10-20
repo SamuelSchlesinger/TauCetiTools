@@ -1,0 +1,93 @@
+# Canonical, human-owned project configuration. No credentials belong here.
+schema_version = 1
+
+[project]
+name = "ExampleCeti"
+branch = "main"
+codeowners = ["@ExampleMaintainer"]
+
+[repositories]
+content = "ExampleOrg/ExampleCeti"
+roadmap = "ExampleOrg/ExampleCetiRoadmap"
+review = "TauCetiProject/TauCetiReview"
+# Enable and create these repositories when choosing the corresponding extras.
+# data = "ExampleOrg/ExampleCetiData"
+# ci = "ExampleOrg/ExampleCetiCI"
+# claims = "ExampleOrg/ExampleCeti-claims"
+
+[lean]
+roots = ["ExampleCeti"]
+root_module = "empty"
+
+[roadmap]
+active_dir = "ExampleCetiRoadmap"
+completed_dir = "Completed"
+
+# Select full commit SHAs before installing the core workflows.
+# Discover a version with: gh api repos/TauCetiProject/TauCetiTools/commits/main --jq .sha
+# [tools.tools]
+# repo = "TauCetiProject/TauCetiTools"
+# ref = "FULL_COMMIT_SHA"
+# [tools.review]
+# repo = "TauCetiProject/TauCetiReview"
+# ref = "FULL_COMMIT_SHA"
+# [tools.progress]
+# repo = "TauCetiProject/TauCetiProgress"
+# ref = "FULL_COMMIT_SHA"
+
+[merge]
+backend = "github-queue"
+checks = ["build", "bump-guard", "scope"]
+
+[[upstreams]]
+repo = "leanprover-community/mathlib4"
+package = "mathlib"
+branch = "master"
+update = true
+overlap = true
+upstream_destination = true
+
+# Everything below is optional. Run doctor --extras to continue beyond core.
+[features]
+archives = false
+ci_archive = false
+claims = false
+docs = false
+progress = false
+zulip = false
+fleet = false
+security_audit = false
+
+[services.github_state]
+mode = "off" # off | hosted | custom
+# url = "https://github-state.example.org"
+
+[services.bors]
+mode = "off" # hosted supplies Neon only; YOU operate the runtime
+deployment = "docker" # docker | cloudflare
+# url = "https://bors.example.org"
+# image = "ghcr.io/taucetiproject/bors-ng@sha256:SELECT_RELEASE_DIGEST"
+
+[services.cache]
+mode = "off"
+# name = "exampleceti-public"
+# artifact_url = "https://cache.example.org/artifacts"
+# revision_url = "https://cache.example.org/revisions"
+
+[publication]
+# docs_url = "https://exampleorg.github.io/ExampleCeti/docs"
+# zulip_site = "https://leanprover.zulipchat.com"
+# zulip_channel = "Project channel"
+# zulip_topic = "Progress logs"
+
+[tools.tools]
+repo="TauCetiProject/TauCetiTools"
+ref="38690d9addbc153e679580ae777d2c3fe40cbcca"
+
+[tools.review]
+repo="TauCetiProject/TauCetiReview"
+ref="621d4c1cfa431edcfaa744fffcc9c040d64787e5"
+
+[tools.progress]
+repo="TauCetiProject/TauCetiProgress"
+ref="eb550fd09bd9cdec4c3f3fe6d57c432464a97fb4"
