@@ -19,13 +19,14 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
    return response({data:{rateLimit:{cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()},repository:repositoryData}});
   }
   return response(u.pathname.endsWith('/check-runs')?{check_runs:[]}:u.pathname.endsWith('/status')?{statuses:[]}:[], 'core');
- });
+ },{},process.env.TEST_POSTGRES_URL?{repositoryExtension:"async fetch(req){if(new URL(req.url).pathname==='/fixture/idle'){await this.alarmFlight;return Response.json({ok:true});}return super.fetch(req);}"}:{});
  try{
   const namespace=await mf.getDurableObjectNamespace('REPOSITORIES'),stub=namespace.get(namespace.idFromName(repository.id));
   await send(stub,'/configure',{repository:repository.name});
   let health;
-  const deadline=Date.now()+20000;
+  const deadline=Date.now()+(process.env.TEST_POSTGRES_URL?600000:20000);
   do{
+   if(process.env.TEST_POSTGRES_URL)await send(stub,'/tick',{repository:repository.name});
    await new Promise(resolve=>setTimeout(resolve,50));
    health=await (await stub.fetch('https://internal/health')).json();
   }while(!health.bootstrap_inventory && Date.now()<deadline);
@@ -34,10 +35,14 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
   const archive=await mf.getR2Bucket('ARCHIVE');
   let baseline;
   do{
+   if(process.env.TEST_POSTGRES_URL)await send(stub,'/tick',{repository:repository.name});
    await new Promise(resolve=>setTimeout(resolve,50));
    baseline=await (await send(stub,'/query',{repository:repository.name,operation:'statuses',args:{sha:head}})).json();
   }while(!baseline.complete && Date.now()<deadline);
   assert.ok(baseline.complete,'status baseline available');
+  // Stored snapshot reads start after the synthetic cron turn finishes. During
+  // publication, unavailable coverage is an intentional revision-churn guard.
+  if(process.env.TEST_POSTGRES_URL)await send(stub,'/fixture/idle',{});
   await archive.put('fixture/status',JSON.stringify({sha:head,context:'build',state:'success',created_at:'2026-10-12T01:00:00Z'}));
   await send(stub,'/event',{key:'fixture/status',delivery:'status',event:'status',repository:repository.name,received:Date.now()});
   const status=await (await send(stub,'/query',{repository:repository.name,operation:'statuses',args:{sha:head}})).json();
@@ -53,7 +58,8 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
   assert.ok([...groups.values()].every(cursors=>cursors.size===1),'identical revisions share one snapshot');
   const key='fixture/closed';
   await archive.put(key,JSON.stringify({repository:{id:Number(repository.id)},installation:{id:Number(repository.installation)},action:'closed',pull_request:{number:600,title:'changed later',state:'closed',updated_at:'2030-01-01T00:00:00Z',head:{sha:head},user:{login:'peer'}}}));
-  await send(stub,'/event',{key,delivery:'closed',event:'pull_request',repository:repository.name,received:Date.now()});
+  const applied=await send(stub,'/event',{key,delivery:'closed',event:'pull_request',repository:repository.name,received:Date.now()});
+  assert.equal(applied.status,200,JSON.stringify(await applied.json()));
   let cursor=first.cursor,rows=[...first.data],pages=1;
   while(cursor){
    const page=await (await send(stub,'/query',{...query,cursor})).json();
