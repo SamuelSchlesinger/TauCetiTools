@@ -355,6 +355,31 @@ export class RepositoryState extends DurableObject<Env> {
       for(const id of chunk){const found=stored[0].toArray().filter(r=>r.id===id);cache.seed('SELECT * FROM resources WHERE kind=? AND id=?',[kind,id],found);cache.seed('SELECT data,updated,observed FROM resources WHERE kind=? AND id=?',[kind,id],found);cache.seed('SELECT data,tombstone FROM resources WHERE kind=? AND id=?',[kind,id],found);for(const key of [queryKey(q),...(['pr_delta','issue_delta'].includes(q.operation)?[queryKey({operation:q.operation==='pr_delta'?'open_prs':'open_issues'})]:[])])cache.seed('SELECT id FROM members WHERE collection=? AND id=?',[key,id],stored[1].toArray().filter(r=>r.id===id && r.collection===key));}
     }
   }
+  async *publicationRows(q:Query,rows:any[],source:RepositoryStore,metadataOnly=false):AsyncGenerator<any> {
+    if(source.backend!=='postgres' || metadataOnly){yield* rows;return;}
+    const kind=this.kind(q),identities=(row:any)=>{
+      const id=q.operation==='files'?String(q.args?.number)+':'+String(row.filename):this.id(q.operation,row);
+      return kind==='pr'?[id,queryKey({operation:'pr',args:{number:row.number}})]:[id];
+    };
+    for(let offset=0;offset<rows.length;){
+      const candidates=rows.slice(offset,offset+128),ids=[...new Set(candidates.flatMap(identities))];
+      // Size old bodies before loading them. A compact incoming listing can
+      // refer to large stored detail rows; both sides constrain the group.
+      const stored=(await source.exec<any>('SELECT id,octet_length(data) bytes FROM resources WHERE kind=? AND id IN ('+ids.map(()=>'?').join(',')+')',kind,...ids)).toArray();
+      const sizes=new Map(stored.map(row=>[row.id,Number(row.bytes)]));
+      let end=offset,newBytes=0,oldBytes=0;const seen=new Set<string>();
+      for(const row of candidates){
+        const fresh=identities(row).filter(id=>!seen.has(id)),old=fresh.reduce((n,id)=>n+(sizes.get(id) || 0),0),next=JSON.stringify(row).length*2;
+        if(end>offset && (newBytes+next>2097152 || oldBytes+old>2097152))break;
+        for(const id of fresh)seen.add(id);newBytes+=next;oldBytes+=old;end++;
+      }
+      this.store=source;
+      const chunk=rows.slice(offset,end);
+      await this.primePublication(q,chunk);
+      yield* chunk;
+      offset=end;
+    }
+  }
   async primeRelated(numbers:string[],heads:string[]):Promise<void> {
     if(!(this.store instanceof ReadCacheStore))return;
     const cache=this.store;
@@ -648,19 +673,24 @@ export class RepositoryState extends DurableObject<Env> {
     const readBatch=this.store.backend==='sqlite'?80:256,writeBatch=this.store.backend==='sqlite'?10:200,metricBatch=this.store.backend==='sqlite'?20:200;
     const entries=new Map<string,{q:Query,priority:number,dirty?:boolean}>();
     for(const item of input){const key=queryKey(item.q),prior=entries.get(key);entries.set(key,{...item,dirty:prior?.dirty || item.dirty});}
+    if(entries.size>512){
+      const unique=[...entries.values()];
+      for(let offset=0;offset<unique.length;offset+=512)await this.enqueueMany(unique.slice(offset,offset+512));
+      return;
+    }
     const jobs=new Map<string,any>(),demands=new Map<string,any>(),collections=new Set<string>();
     const keys=[...entries.keys()],numbers=new Set<string>(),heads=new Map<string,string[]>(),comments=new Map<string,any>();
-    const select=async(table:string,column:string,values:string[],filter='')=>{
+    const select=async(table:string,column:string,values:string[],filter='',projection='*')=>{
       const rows:any[]=[];
       for(let offset=0;offset<values.length;offset+=readBatch) {
         const batch=values.slice(offset,offset+readBatch);
-        rows.push(...await this.scanRows('SELECT * FROM '+table+' WHERE '+column+' IN ('+batch.map(()=>'?').join(',')+')'+filter,...batch));
+        rows.push(...await this.scanRows('SELECT '+projection+' FROM '+table+' WHERE '+column+' IN ('+batch.map(()=>'?').join(',')+')'+filter,...batch));
       }
       return rows;
     };
     for(let offset=0;offset<keys.length;offset+=readBatch) {
       const chunk=keys.slice(offset,offset+readBatch),where=' WHERE key IN ('+chunk.map(()=>'?').join(',')+')';
-      const [js,ds,cs]=await this.store.batch(['jobs','demand','collections'].map(table=>({sql:'SELECT * FROM '+table+where,bindings:chunk})));
+      const [js,ds,cs]=await this.store.batch([['jobs','key,dirty,requested_at,due,wait_reason,attempt'],['demand','key,at'],['collections','key,complete']].map(([table,projection])=>({sql:'SELECT '+projection+' FROM '+table+where,bindings:chunk})));
       for(const row of js.toArray())jobs.set(row.key,row);
       for(const row of ds.toArray())demands.set(row.key,row);
       for(const row of cs.toArray())if(row.complete)collections.add(row.key);
@@ -669,9 +699,9 @@ export class RepositoryState extends DurableObject<Env> {
     const shas=[...new Set([...entries.values()].filter(e=>e.q.args?.sha).map(e=>String(e.q.args!.sha)))];
     for(const row of await select('head_prs','sha',shas)){const group=heads.get(row.sha)||[];group.push(row.number);heads.set(row.sha,group);numbers.add(row.number);}
     const ids=[...entries.values()].filter(e=>e.q.operation==='reactions').map(e=>String(e.q.args?.id));
-    if(ids.length)for(const row of await select('resources','id',ids," AND kind='review_comments'"))if(row.kind==='review_comments'){comments.set(row.id,row);if(row.parent)numbers.add(row.parent);}
+    if(ids.length)for(const row of await select('resources','id',ids," AND kind='review_comments'",'id,kind,parent,tombstone'))if(row.kind==='review_comments'){comments.set(row.id,row);if(row.parent)numbers.add(row.parent);}
     const states=new Map<string,any>();
-    for(const row of await select('resources','id',[...numbers]," AND kind IN ('pr','issue')"))if(['pr','issue'].includes(row.kind) && (!states.has(row.id)||row.kind==='pr'))states.set(row.id,JSON.parse(row.data));
+    for(const row of await select('resources','id',[...numbers]," AND kind IN ('pr','issue')","id,kind,json_extract(data,'$.state') state"))if(['pr','issue'].includes(row.kind) && (!states.has(row.id)||row.kind==='pr'))states.set(row.id,row);
     const now=Date.now();let scheduled=Infinity;
     const values:any[][]=[],metrics:any[][]=[];
     for(const [key,{q,priority,dirty=false}] of entries) {
@@ -1076,7 +1106,7 @@ export class RepositoryState extends DurableObject<Env> {
       throw error;
     }
     const response=supplied?null:await stub(this.env.INSTALLATIONS,repo.installation).fetch('https://internal/read',{method:'POST',headers:{'x-request-id':crypto.randomUUID()},body:JSON.stringify({repository:repo,query:upstream,cursor:job.cursor,page:job.page,api:job.api,nested,etag:job.page===1 && !job.nested && q.operation!=='workflow_runs'?job.etag:undefined})});
-    const result:any=supplied || await response!.json();
+    const result:any=supplied?{...supplied}:await response!.json();
     this.traceRepair('refresh_response',job);
     const objects=new Map<string,string>(),encodings=new Map<string,string>();
     const prefix=`staging/${repo.id}/${encodeURIComponent(job.key)}/${started}/`;
@@ -1103,7 +1133,12 @@ export class RepositoryState extends DurableObject<Env> {
     try {await this.atomic(state=>{
       state.preparedEncodings=encodings;
       const archive=state.env.ARCHIVE;
-      state.env={...state.env,ARCHIVE:new Proxy(archive,{get(target,key){if(key==='get')return async(name:string,...args:any[])=>objects.has(name)?{text:async()=>objects.get(name)!,json:async()=>JSON.parse(objects.get(name)!)}:(target.get as any)(name,...args);const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}})};
+      state.env={...state.env,ARCHIVE:new Proxy(archive,{get(target,key){if(key==='get')return async(name:string,...args:any[])=>{
+        if(!objects.has(name))return (target.get as any)(name,...args);
+        // Publication consumes each prepared page once; the immutable R2 key remains durable for retry.
+        const consume=()=>{const text=objects.get(name)!;objects.delete(name);return text;};
+        return {text:async()=>consume(),json:async()=>JSON.parse(consume())};
+      };const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;}})};
       return RepositoryState.prototype.applyRefresh.call(state,job,q,repo,started,response,result,preparedNext,staged);
     });this.traceRepair('refresh_committed',job);}
     catch(error){if(!(error instanceof LeaseLost))throw error;}
@@ -1161,17 +1196,19 @@ export class RepositoryState extends DurableObject<Env> {
     for (let page=1;page<=job.page;page++) {
       const object=await this.env.ARCHIVE.get(`staging/${repo.id}/${encodeURIComponent(job.key)}/${started}/${page}`);
       if (!object) throw new Error('staging page missing');
-      const data:any=await object.json(); if (Array.isArray(data)) rows.push(...data); else scalar=data;
+      const text=await object.text();
+      const data:any=JSON.parse(text); if (Array.isArray(data)) rows.push(...data); else scalar=data;
     }
     this.traceRepair('publication_rows',job,{rows:rows.length});
-    if(this.store.backend==='postgres')await this.primePublication(q,rows);
+    const publicationStore=this.store;
+    if(this.store.backend==='postgres')this.store=new ReadCacheStore(publicationStore);
     const kind=this.kind(q), memberIDs=new Set<string>(), acceptedIDs=new Set<string>();
     const changedNumbers=new Set<number>(), changedHeads=new Set<number>();
     if (scalar!==undefined || ['pr','repository','statuses'].includes(q.operation)) {
       await this.put(q.operation,job.key,scalar===undefined?rows:scalar,started);
       if (q.operation==='pr' && scalar?.number) await this.put('pr',String(scalar.number),scalar,started,false,String(scalar.number));
     } else {
-      for (const row of rows) {
+      for await (const row of this.publicationRows(q,rows,publicationStore)) {
         if (q.operation.startsWith('recent_') && Date.parse(row.updatedAt)<Date.now()-30*86400000) continue;
         const id=q.operation==='files'?String(q.args?.number)+':'+String(row.filename):this.id(q.operation,row); memberIDs.add(id);
         if (kind==='pr') {
@@ -1190,10 +1227,18 @@ export class RepositoryState extends DurableObject<Env> {
       if(this.store instanceof ReadCacheStore)for(const row of prior)this.store.seed('SELECT id FROM members WHERE collection=? AND id=?',[job.key,row.id],[{id:row.id}]);
       const openInventory=['open_prs','open_issues'].includes(q.operation);
       for (const row of prior) if (!(openInventory && result.api==='core') && !memberIDs.has(row.id) && row.observed<=started) await this.membership(job.key,row.id,false);
-      for (const id of memberIDs) {
-        const current=openInventory?(await this.store.exec<any>('SELECT data,tombstone FROM resources WHERE kind=? AND id=?',kind,id)).toArray()[0]:null;
-        if(current && (current.tombstone || (await this.decode(current.data)).state!=='OPEN')) continue;
-        await this.membership(job.key,id,true);
+      if(openInventory){
+        const decided=new Set<string>();
+        // Decide once per ID from the final stored resource, after every put.
+        for await(const row of this.publicationRows(q,rows,publicationStore)){
+          const id=this.id(q.operation,row);if(decided.has(id))continue;decided.add(id);
+          const current=(await this.store.exec<any>('SELECT data,tombstone FROM resources WHERE kind=? AND id=?',kind,id)).toArray()[0];
+          if(current && (current.tombstone || (await this.decode(current.data)).state!=='OPEN'))continue;
+          await this.membership(job.key,id,true);
+        }
+      }else{
+        if(this.store instanceof ReadCacheStore){const known=new Set(prior.map(row=>row.id));for(const id of memberIDs)this.store.seed('SELECT id FROM members WHERE collection=? AND id=?',[job.key,id],known.has(id)?[{id}]:[]);}
+        for(const id of memberIDs)await this.membership(job.key,id,true);
       }
     }
     if (job.lease_id && (await this.store.exec<any>('SELECT lease_id FROM jobs WHERE key=?',job.key)).toArray()[0]?.lease_id!==job.lease_id) throw new LeaseLost();
@@ -1201,10 +1246,18 @@ export class RepositoryState extends DurableObject<Env> {
     await this.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET complete=1,verified=excluded.verified,revision=excluded.revision,etag=excluded.etag',job.key,q.operation,JSON.stringify(q.args || {}),1,Date.now(),(await this.revision()),job.page===1?result.etag || null:null);
     await this.store.exec('DELETE FROM meta WHERE key=?',stagingStateKey(job.key));
     await this.finishJob(job,q,job.page===1?result.etag || null:null);
+    // These paths now need only repair identities. Release payload strings
+    // before building a large fan-out, while keeping detail/thread rows until
+    // their final publication pass has consumed them.
+    const identity=(row:any)=>({number:row.number,id:row.id,state:row.state,updatedAt:row.updatedAt,headRefOid:row.headRefOid});
+    if(!['open_prs','review_threads'].includes(q.operation)){
+      for(let i=0;i<rows.length;i++)rows[i]=identity(rows[i]);
+      result.data=undefined;scalar=undefined;this.preparedEncodings?.clear();
+    }
     const deltaRepairs:{q:Query,priority:number,dirty?:boolean}[]=[];
     if (['pr_delta','issue_delta'].includes(q.operation)) {
       const operation=q.operation==='pr_delta'?'open_prs':'open_issues', inventory=queryKey({operation});
-      for (const row of rows) {
+      for await (const row of this.publicationRows(q,rows,publicationStore)) {
         const id=String(row.number);
         if (acceptedIDs.has(id)) await this.membership(inventory,id,row.state==='OPEN');
         if (changedNumbers.has(row.number)) {
@@ -1217,7 +1270,8 @@ export class RepositoryState extends DurableObject<Env> {
     }
     const repairs:{q:Query,priority:number,dirty?:boolean}[]=deltaRepairs;
     if (q.operation==='open_prs' || q.operation==='recent_prs') {
-      for (const row of rows) {
+      let published=0;
+      for await (const row of this.publicationRows(q,rows,publicationStore,q.operation==='recent_prs')) {
         if (q.operation==='recent_prs' && Date.parse(row.updatedAt)<Date.now()-30*86400000) continue;
         for (const operation of ['issue_comments','review_threads','reviews','files']) repairs.push({q:{repository:repo.name,operation,args:{number:row.number}},priority:20});
         if (q.operation==='open_prs') {
@@ -1226,6 +1280,7 @@ export class RepositoryState extends DurableObject<Env> {
           await this.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET complete=1,verified=excluded.verified,revision=excluded.revision',itemKey,'pr',JSON.stringify({number:row.number}),1,Date.now(),(await this.revision()),null);
         }
         if (q.operation==='open_prs' && row.headRefOid) for (const operation of ['statuses']) repairs.push({q:{repository:repo.name,operation,args:{sha:row.headRefOid}},priority:2});
+        if(q.operation==='open_prs')rows[published++]=identity(row);
       }
       if(q.operation==='open_prs') await this.setMeta('bootstrap_inventory',Date.now());
     }
@@ -1234,15 +1289,19 @@ export class RepositoryState extends DurableObject<Env> {
     if (q.operation==='review_threads') {
       // This complete thread reconciliation also supplies the flat REST-shaped history.
       const comments=rows.flatMap(t=>t.comments.nodes.map(comment));
+      rows.length=0;result.data=undefined;this.preparedEncodings?.clear();
       const flatKey=queryKey({operation:'review_comments',args:q.args}), ids=new Set<string>();
-      if(this.store.backend==='postgres')await this.primePublication({...q,operation:'review_comments'},comments);
-      for (const c of comments) {
+      const flatQuery={...q,operation:'review_comments'};
+      let published=0;
+      for await (const c of this.publicationRows(flatQuery,comments,publicationStore)) {
         ids.add(String(c.id)); await this.put('review_comments',String(c.id),c,started,false,String(q.args?.number));
         repairs.push({q:{repository:repo.name,operation:'reactions',args:{id:String(c.id)}},priority:25});
+        comments[published++]=undefined;
       }
       const prior=await this.scanRows('SELECT m.id,r.observed FROM members m LEFT JOIN resources r ON r.kind=? AND r.id=m.id WHERE m.collection=?','review_comments',flatKey);
       if(this.store instanceof ReadCacheStore)for(const row of prior)this.store.seed('SELECT id FROM members WHERE collection=? AND id=?',[flatKey,row.id],[{id:row.id}]);
       for (const row of prior) if (!ids.has(row.id) && row.observed<=started) await this.membership(flatKey,row.id,false);
+      if(this.store instanceof ReadCacheStore){const known=new Set(prior.map(row=>row.id));for(const id of ids)this.store.seed('SELECT id FROM members WHERE collection=? AND id=?',[flatKey,id],known.has(id)?[{id}]:[]);}
       for (const id of ids) await this.membership(flatKey,id,true);
       if (!(await this.store.exec('SELECT key FROM collections WHERE key=? AND complete=1',flatKey)).toArray().length) await this.nextRevision('collection',flatKey);
       await this.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET complete=1,verified=excluded.verified,revision=excluded.revision',flatKey,'review_comments',JSON.stringify(q.args),1,Date.now(),(await this.revision()),null);
@@ -1252,6 +1311,8 @@ export class RepositoryState extends DurableObject<Env> {
         await this.store.exec('UPDATE jobs SET lease_id=NULL,lease_until=0 WHERE key=?',flatKey);
       }
     }
+    // Fan-out retains only compact query identities, never the decoded inventory.
+    rows.length=0;result.data=undefined;scalar=undefined;this.preparedEncodings?.clear();
     this.traceRepair('publication_repairs',job,{repairs:repairs.length});
     await this.enqueueMany(repairs);
     await this.setMeta('last_repair',Date.now());
@@ -2137,8 +2198,8 @@ export class RepositoryState extends DurableObject<Env> {
     await terminalReceipt(this.env.ARCHIVE,state,'observation-receipt.json');
   }
   private async superviseMigration(steps=5):Promise<Response> {
-    // Bound cumulative request work alongside the per-page limits. Long
-    // compatibility requests exhausted memory in the live source rehearsal.
+    // Bound cumulative request work alongside the per-page limits, leaving
+    // memory and CPU headroom for overlapping stored reads and ingress.
     steps=Math.min(steps,5);
     const repo=JSON.parse(this.env.ALLOWED_REPOSITORIES || '[]').find((r:any)=>this.env.REPOSITORIES.idFromName(r.id).toString()===this.ctx.id.toString())?.id || this.localMeta('repository')?.id;
     if(!repo)return json({migration:null});
