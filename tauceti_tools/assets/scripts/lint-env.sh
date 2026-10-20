@@ -191,6 +191,7 @@ PROJECT_ROOT="${TAUCETI_PROJECT_ROOT:-$(cd "$(dirname "$0")/.." && pwd)}"
 TRUSTED_SCRIPTS="${TAUCETI_TRUSTED_SCRIPTS:-$PROJECT_ROOT/scripts}"
 cd "$PROJECT_ROOT"
 BASELINE="$TRUSTED_SCRIPTS/lint-baseline.txt"
+ROOT='TauCeti'
 ALLOWLIST="$TRUSTED_SCRIPTS/lint-nolints-allowlist.txt"
 UPDATE=0
 [ "${1:-}" = "--update" ] && UPDATE=1
@@ -439,18 +440,21 @@ nall_undoc=$(awk '$1 == "DOCSCAN-ALL" && $3 == "undocumented"' "$TMP/docscan.txt
   || { cat "$TMP/docscan.txt"; fail "driver failure: DOCSCAN-ALL status tallies ($nall_doc documented, $nall_undoc undocumented) disagree with the summary ($documented, $undocumented)"; }
 [ "$scanned" -eq $((documented + undocumented)) ] \
   || fail "docstring scan summary is inconsistent: scanned=$scanned != documented=$documented + undocumented=$undocumented"
-[ "$scanned" -gt 0 ] || fail "docstring scan scanned 0 declarations — the scan is miswired"
-[ "$documented" -gt 0 ] \
-  || fail "docstring scan saw NO docstrings at all ($scanned scanned): docstring visibility is broken (olean docstring storage moved?) — fix the scan, do not baseline this"
-# Scanned-count floor: partial blindness (a narrowed candidate set) must not pass
-# silently. 500 is ~75% of the 676 declarations scanned when this guard was written
-# (2026-07); RAISE it as the library grows, and if it ever fires, fix the scan's
-# coverage — do not lower the floor to match a shrunken scan.
-[ "$scanned" -ge 500 ] \
-  || fail "docstring scan scanned only $scanned declaration(s) (floor: 500): the scan's coverage collapsed — fix the scan, do not baseline this"
+# A starter library may have no declarations. Existing projects can require scan coverage
+# with a policy file: minimum count on its first line, documented sentinel names thereafter.
+POLICY="$TRUSTED_SCRIPTS/lint-docscan-sentinels.txt"
+floor=0
+if [ -f "$POLICY" ]; then
+  floor=$(head -n 1 "$POLICY")
+  case "$floor" in ''|*[!0-9]*) fail "invalid docstring scan floor in $POLICY" ;; esac
+fi
+[ "$scanned" -ge "$floor" ] || fail "docstring scan scanned only $scanned declaration(s) (floor: $floor)"
+if [ "$scanned" -gt 0 ]; then
+  [ "$documented" -gt 0 ] || fail "docstring scan saw NO docstrings at all ($scanned scanned): fix docstring visibility"
+fi
 # Sentinels: known-documented declarations spread across the library must be scanned
 # AND seen as documented; each failure mode is distinct (see the header comment).
-for sentinel in TauCeti.GridDiagram.OSet TauCeti.Isotopy TauCeti.AlgebraicGeometry.WeilDivisor.coeff; do
+for sentinel in $(tail -n +2 "$POLICY" 2>/dev/null || true); do
   sentinel_status=$(awk -v d="$sentinel" '$1 == "DOCSCAN-ALL" && $2 == d { print $3 }' "$TMP/docscan.txt")
   case "$sentinel_status" in
     documented) : ;;
@@ -552,8 +556,8 @@ grep -E '^- [A-Za-z0-9_]+: \(2/2\) ' "$TMP/out.txt" | sed 's/^/lint-env: trace /
 # --- 4. locate the linter report and parse it fail-closed -------------------------
 # Two genuine header shapes (see SECURITY MODEL): N > 0 comes as an error diagnostic
 # prefixed with our driver's path; N = 0 comes as a bare info line. Collect both.
-awk -v pfx="$DRIVER:" '
-  BEGIN { hdr = "-- Found [0-9]+ errors? in [0-9]+ declarations \\(plus [0-9]+ automatically generated ones\\) in TauCeti with [0-9]+ linters$" }
+awk -v pfx="$DRIVER:" -v root="$ROOT" '
+  BEGIN { gsub(/[.]/, "[.]", root); hdr = "-- Found [0-9]+ errors? in [0-9]+ declarations \\(plus [0-9]+ automatically generated ones\\) in " root " with [0-9]+ linters$" }
   {
     if (index($0, pfx) == 1) {
       rest = substr($0, length(pfx) + 1)
@@ -574,7 +578,7 @@ fi
 hdr_lineno=$(awk '{print $1}' "$TMP/headers.txt")
 hdr_kind=$(awk '{print $2}' "$TMP/headers.txt")
 hdr_count=$(sed -n 's/^.*-- Found \([0-9]*\) errors\{0,1\} in .*/\1/p' "$TMP/headers.txt")
-hdr_nlinters=$(sed -n 's/^.* in TauCeti with \([0-9]*\) linters$/\1/p' "$TMP/headers.txt")
+hdr_nlinters=$(sed -n 's/^.* in [^ ]* with \([0-9]*\) linters$/\1/p' "$TMP/headers.txt")
 [ -n "$hdr_kind" ] && [ -n "$hdr_count" ] && [ -n "$hdr_nlinters" ] \
   || fail "internal error: could not re-parse the report header"
 

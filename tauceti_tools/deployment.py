@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from pathlib import Path
 
 from .project import DOCS, ConfigError, Project
@@ -140,8 +141,12 @@ except OSError:
             "compose.yaml": compose,
             "Caddyfile": f"{host} {{\n    @internal path /internal/*\n    respond @internal 404\n    reverse_proxy 127.0.0.1:4000\n}}\n",
             "tauceti-bors-heartbeat": heartbeat,
-            "heartbeat.cron": "* * * * * /usr/local/bin/tauceti-bors-heartbeat\n",
-            "bors.private.env.example": "# Copy to bors.private.env, chmod 600, and enter actual values privately.\nDATABASE_URL=\nGITHUB_INTEGRATION_ID=\nGITHUB_INTEGRATION_PEM=\nGITHUB_WEBHOOK_SECRET=\nGITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nSECRET_KEY_BASE=\nTAUCETI_REVIEW_APP_ID=\nBORS_REVIEW_LOGIN=\nBORS_REPOSITORY_ID=\nBORS_ACTOR_ID=\nBORS_CANCELLATION_WORKFLOW_ID=\n",
+            "heartbeat.cron": "* * * * * TAUCETI_BORS_ENV_FILE="
+            + shlex.quote(str(output.resolve() / "bors.private.env"))
+            + " "
+            + shlex.quote(str(output.resolve() / "tauceti-bors-heartbeat"))
+            + "\n",
+            "bors.private.env.example": "# Copy to bors.private.env, chmod 600, and enter actual values privately.\nDATABASE_URL=\nGITHUB_INTEGRATION_ID=\nGITHUB_INTEGRATION_PEM=\nGITHUB_WEBHOOK_SECRET=\nGITHUB_CLIENT_ID=\nGITHUB_CLIENT_SECRET=\nSECRET_KEY_BASE=\nTAUCETI_REVIEW_APP_ID=\nBORS_REVIEW_LOGIN=\n",
         }
     elif service == "bors":
         pin = project.tool("bors")
@@ -198,9 +203,6 @@ except OSError:
                     for field, key in (
                         ("review_app_id", "TAUCETI_REVIEW_APP_ID"),
                         ("review_login", "BORS_REVIEW_LOGIN"),
-                        ("github_repository_id", "BORS_REPOSITORY_ID"),
-                        ("actor_id", "BORS_ACTOR_ID"),
-                        ("cancellation_workflow_id", "BORS_CANCELLATION_WORKFLOW_ID"),
                     )
                     if field in config
                 },
@@ -225,7 +227,8 @@ bors/node_modules/.bin/wrangler deploy --config wrangler.downstream.jsonc
 
 Upload secrets from private files with `python3 bors/deploy/cloudflare/upload_secrets.py --help`;
 pass `--name {name}` and `--config wrangler.downstream.jsonc` as well as each private file.
-Set the configured review App ID/login and repository/actor/workflow IDs in vars before enabling merges.
+Set the configured review App ID/login in vars before enabling merges.
+Exact-run cancellation and speculative trains remain Tau Ceti-only.
 The complete form fields and secret sources are in {DOCS}#bors.
 If a resource already exists, reuse it; do not delete queues or archives during an upgrade.
 """

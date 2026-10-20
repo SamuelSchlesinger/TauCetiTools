@@ -36,10 +36,14 @@ class GitHub:
     def __init__(self):
         self.cache = {}
 
-    def read(self, path: str):
+    def read(self, path: str, *, paginate=True):
         if path not in self.cache:
             try:
-                proc = subprocess.run(["gh", "api", "--paginate", "--slurp", path], capture_output=True, text=True)
+                proc = subprocess.run(
+                    ["gh", "api", *(["--paginate", "--slurp"] if paginate else []), path],
+                    capture_output=True,
+                    text=True,
+                )
             except FileNotFoundError:
                 self.cache[path] = (None, "gh is not installed")
             else:
@@ -51,7 +55,7 @@ class GitHub:
                     self.cache[path] = (None, f"GitHub HTTP {code}; inaccessible does not establish absence")
                 else:
                     try:
-                        pages = json.loads(proc.stdout)
+                        pages = json.loads(proc.stdout) if paginate else [json.loads(proc.stdout)]
                         self.cache[path] = (pages[0] if len(pages) == 1 else pages, "")
                     except (ValueError, IndexError):
                         self.cache[path] = (None, "GitHub returned an unreadable response")
@@ -398,10 +402,12 @@ def diagnose(project: Project, *, extras=False, github=None) -> list[Finding]:
                 )
             )
 
-        runs, error = gh.read(f"repos/{repo}/actions/runs?branch={project.branch}&per_page=20")
-        workflow_runs = _items(runs, "workflow_runs")
-        for consumer in ("pr-build", "Auto-merge"):
-            candidates = [r for r in workflow_runs if r.get("name") == consumer]
+        for consumer, workflow in (("pr-build", "pr-build.yml"), ("Auto-merge", "auto-merge.yml")):
+            runs, error = gh.read(
+                f"repos/{repo}/actions/workflows/{workflow}/runs?branch={project.branch}&status=success&per_page=1",
+                paginate=False,
+            )
+            candidates = _items(runs, "workflow_runs")
             latest = candidates[0] if candidates else None
             status = "pending"
             summary = error or (

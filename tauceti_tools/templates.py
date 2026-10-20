@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -120,7 +121,10 @@ def run_script(name: str, args: list[str], project: Project | None = None) -> in
         executable = destination / name
     command = ["python3", str(executable)] if executable.suffix == ".py" else ["bash", str(executable)]
     try:
-        return subprocess.call([*command, *args])
+        env = dict(os.environ)
+        if project is not None:
+            env.update(TAUCETI_PROJECT_ROOT=str(Path.cwd()), TAUCETI_TRUSTED_SCRIPTS=str(executable.parent))
+        return subprocess.call([*command, *args], env=env)
     finally:
         if project is not None:
             shutil.rmtree(destination, ignore_errors=True)
@@ -315,6 +319,10 @@ def configuration_pr(project: Project, *, apply=False, role="content"):
     if role == "content":
         (directory / "tauceti.toml").write_bytes(read_source(project.source))
     subprocess.run(["git", "-C", str(directory), "add", "--all"], check=True)
+    if not apply:
+        subprocess.run(["git", "-C", str(directory), "diff", "--cached"], check=True)
+        print(f"Preview saved in {directory}; inspect its files. Add --apply to commit, push and open the setup PR.")
+        return
     if subprocess.run(["git", "-C", str(directory), "diff", "--cached", "--quiet"]).returncode == 0:
         print("Already configured; no PR needed.")
         return

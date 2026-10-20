@@ -9,7 +9,7 @@ name: publish-lake-cache
 on:
   workflow_call:
     inputs:
-      tools_repository: {type: string, default: TauCetiProject/TauCetiTools}
+      tools_repository: {type: string, required: true}
       tools_ref: {type: string, required: true}
       revision:
         description: Immutable TauCeti revision whose output map is being published

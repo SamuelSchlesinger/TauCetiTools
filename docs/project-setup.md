@@ -121,6 +121,7 @@ Write `lakefile.toml` as follows, then run `lake update`, `lake exe cache get`, 
 ```toml
 name = "ExampleCeti"
 defaultTargets = ["ExampleCeti"]
+platformIndependent = true
 
 [[require]]
 name = "mathlib"
@@ -141,7 +142,12 @@ name = "module-system"
 root = "scripts.ModuleSystem"
 ```
 
-The executable sources arrive with the pinned project templates. For CSLib or another
+The executable sources arrive with the pinned project templates. Project-specific lint baselines
+and roadmap maps live in `scripts/`; new projects start with empty policy files. An optional
+`scripts/lint-docscan-sentinels.txt` sets a minimum declaration count on its first line and lists
+known documented declarations, one per subsequent line.
+
+ For CSLib or another
 upstream, obtain the toolchain from that upstream's selected commit instead and add its Lake
 dependency before resolving the manifest. Do not copy a Mathlib-only manifest into a project
 with additional direct dependencies.
@@ -652,17 +658,11 @@ npx wrangler r2 bucket create exampleceti-bors-webhooks
 
 Add a top-level `vars` object containing `BORS_PROJECT: "ExampleOrg/ExampleCeti"`,
 `BORS_BASE_BRANCH: "main"`, `BORS_STAGE_DISPATCH_PROJECT: "ExampleOrg/ExampleCeti"`,
-`PUBLIC_HOST: "bors.example.org"`, `BORS_SPECULATIVE_TRAINS: "false"`, and the exact identities:
-
-```sh
-gh api repos/ExampleOrg/ExampleCeti --jq .id
-gh api 'users/EXAMPLE_BORS_APP_SLUG%5Bbot%5D' --jq .id
-gh api repos/ExampleOrg/ExampleCeti/actions/workflows/pr-build.yml --jq .id
-```
-
-Enter these numeric results as `BORS_REPOSITORY_ID`, `BORS_ACTOR_ID` and
-`BORS_CANCELLATION_WORKFLOW_ID`. `TAUCETI_REVIEW_APP_ID` is the automation App's numeric ID;
-`BORS_REVIEW_LOGIN` is its exact `APP_SLUG[bot]` login. These are public identifiers, not keys.
+`PUBLIC_HOST: "bors.example.org"`, and `BORS_SPECULATIVE_TRAINS: "false"`.
+Set `TAUCETI_REVIEW_APP_ID` to the automation App's numeric ID and `BORS_REVIEW_LOGIN`
+to its exact `APP_SLUG[bot]` login. These are public identifiers, not keys.
+Exact-run cancellation and speculative trains remain Tau Ceti-only; downstream deployments
+do not need cancellation actor or workflow IDs.
 The repository ID used in a Bors observation URL is instead Bors's own database repository ID,
 visible in its `/repositories/NUMBER` UI; store it as `services.bors.repository_id` only if
 collecting those optional receipts.
@@ -809,3 +809,7 @@ proof that the key works. Keep publisher credentials out of untrusted build exec
 hosted cache, request a grant instead of creating a bucket; the operator supplies scoped write
 credentials and all four endpoint values privately. Installation of an App alone grants none
 of this access.
+
+The review spend and round ledger lives on the `reviews` branch of the content repository,
+or the configured Data repository when one is declared. This state persists even with optional
+review archiving off; the automation App needs contents write permission on that repository.

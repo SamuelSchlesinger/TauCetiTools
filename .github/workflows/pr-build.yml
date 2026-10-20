@@ -1554,6 +1554,7 @@ jobs:
         with:
           ref: ${{ inputs.project_ref }}
           sparse-checkout: |
+            tauceti.toml
             scripts/finalize_batch.py
             scripts/bors_observation.py
             scripts/bors_train_identity.py

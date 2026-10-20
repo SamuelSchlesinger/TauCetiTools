@@ -1,5 +1,6 @@
 name = "ExampleCeti"
 defaultTargets = ["ExampleCeti"]
+platformIndependent = true
 
 [[require]]
 name = "mathlib"
@@ -9,3 +10,11 @@ rev = "master"
 [[lean_lib]]
 name = "ExampleCeti"
 globs = ["ExampleCeti.*"]
+
+[[lean_exe]]
+name = "axioms"
+root = "scripts.Axioms"
+
+[[lean_exe]]
+name = "module-system"
+root = "scripts.ModuleSystem"

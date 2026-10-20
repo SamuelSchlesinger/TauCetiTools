@@ -105,7 +105,13 @@ class Project:
 
     @property
     def state_root(self) -> Path:
-        base = Path(os.environ.get("XDG_STATE_HOME", str(Path.home() / ".local/state")))
+        try:
+            import pwd
+
+            home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        except ImportError:
+            home = Path.home()
+        base = Path(os.environ.get("XDG_STATE_HOME", str(home / ".local/state")))
         return base / "tauceti/projects" / self.key
 
     def environment(self) -> dict[str, str]:
@@ -133,6 +139,9 @@ class Project:
             "TAUCETI_REVIEW_REF": review.get("ref", ""),
             "TAUCETI_RUBRICS_REF": self.raw.get("review", {}).get("rubrics_ref", review.get("ref", "")),
             "TAUCETI_DATA_REPO": self.repos.get("data", "") if self.feature("archives") else "",
+            "TAUCETI_LEDGER_REPO": self.repos.get("data", self.content),
+            "TAUCETI_LEDGER_OWNER": self.repos.get("data", self.content).split("/")[0],
+            "TAUCETI_LEDGER_NAME": self.repos.get("data", self.content).split("/")[1],
             "TAUCETI_CI_REPO": self.repos.get("ci", "") if self.feature("ci_archive") else "",
             "TAUCETI_CLAIMS_REPO": self.repos.get("claims", "") if self.feature("claims") else "",
             "TAUCETI_BASE_BRANCH": self.branch,
@@ -232,6 +241,8 @@ def parse(data: bytes, source: str = "") -> Project:
     for name, value in _table(raw, "features").items():
         if not isinstance(value, bool):
             raise ConfigError(f"features.{name} must be true or false")
+    if raw.get("features", {}).get("progress") and not raw.get("tools", {}).get("progress"):
+        raise ConfigError("features.progress = true requires [tools.progress] repo and a full immutable ref")
     for name, value in _table(raw, "services").items():
         if not isinstance(value, dict) or value.get("mode") not in ("off", "hosted", "custom"):
             raise ConfigError(f"services.{name}.mode must be off, hosted or custom")

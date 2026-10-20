@@ -96,7 +96,9 @@ def main(argv=None):
             raise ConfigError(
                 "Pass --conf PATH_OR_URL. To start: tauceti-tools init --repo OWNER/PROJECT --owner-login HUMAN"
             )
-        project = load(source)
+        project = (
+            bootstrap(["--conf", source]) if args.command == "config" and args.action == "environment" else load(source)
+        )
         if args.command == "upstreams":
             from .upstreams import guard, update
 
@@ -124,7 +126,6 @@ def main(argv=None):
                     f"Saved {path}. Restart the worker with --conf {path} to adopt it; running rounds retain their current configuration."
                 )
             elif args.action == "environment":
-                bootstrap(["--conf", source])
                 env = project.environment()
                 env.update(
                     {key: os.environ[key] for key in ("TAUCETI_CONF", "TAUCETI_CONF_SOURCE", "TAUCETI_CONF_SNAPSHOT")}

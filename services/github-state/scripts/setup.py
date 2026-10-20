@@ -228,18 +228,6 @@ def cli():
         if app["slug"] != name:
             raise SystemExit("Wrong App")
         info = {"id": verified["repository_id"]}
-        bucket = name
-        for queue in [name + "-events-dlq", name + "-events"]:
-            listing = run(*wrangler, "queues", "list", check=False)
-            if listing.returncode or queue not in listing.stdout:
-                r = run(*wrangler, "queues", "create", queue, check=False)
-                if r.returncode and not any(
-                    message in r.stderr.lower() for message in ("already exists", "already taken")
-                ):
-                    raise SystemExit("Queue provisioning failed: " + r.stderr)
-        r = run(*wrangler, "r2", "bucket", "create", bucket, check=False)
-        if r.returncode and "already" not in r.stderr.lower():
-            raise SystemExit("R2 provisioning failed: " + r.stderr)
         settings = {
             "GITHUB_APP_ID": str(app["id"]),
             "GITHUB_INSTALLATION_ID": a.installation,
@@ -279,6 +267,18 @@ def cli():
         try:
             os.close(fd)
             private(Path(path), json.dumps(config))
+            bucket = name
+            for queue in [name + "-events-dlq", name + "-events"]:
+                listing = run(*wrangler, "queues", "list", "--config", path, check=False)
+                if listing.returncode or queue not in listing.stdout:
+                    r = run(*wrangler, "queues", "create", queue, "--config", path, check=False)
+                    if r.returncode and not any(
+                        message in r.stderr.lower() for message in ("already exists", "already taken")
+                    ):
+                        raise SystemExit("Queue provisioning failed: " + r.stderr)
+            r = run(*wrangler, "r2", "bucket", "create", bucket, "--config", path, check=False)
+            if r.returncode and "already" not in r.stderr.lower():
+                raise SystemExit("R2 provisioning failed: " + r.stderr)
             r = run(*wrangler, "deploy", "--config", path, *flags, check=False)
             if r.returncode:
                 raise SystemExit(r.stderr)
