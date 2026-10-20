@@ -4,7 +4,7 @@ import {runtime,repository,response,send} from './runtime.mjs';
 
 test('large inventory snapshots paginate coherently and coalesce concurrent reads',async()=>{
  const count=Number(process.env.TAUCETI_STATE_TEST_PRS || 1200), head='a'.repeat(40);
- const prs=Array.from({length:count},(_,i)=>({number:i+1,title:'PR '+(i+1),body:'body'.repeat(300),state:'OPEN',isDraft:false,mergeable:'MERGEABLE',updatedAt:'2026-10-12T00:00:00Z',headRefOid:head,author:{login:'peer',__typename:'User'},labels:{nodes:[]}}));
+ const prs=Array.from({length:count},(_,i)=>({number:i+1,title:'PR '+(i+1),body:'body'.repeat(300),state:'OPEN',isDraft:false,mergeable:'MERGEABLE',updatedAt:'2026-10-12T00:00:00Z',headRefOid:head,author:{login:'peer',__typename:'User'},labels:{totalCount:0,nodes:[]}}));
  let inventoryRequests=0;
  const mf=await runtime(async(req,u)=>{
   if(u.pathname==='/graphql'){
@@ -32,11 +32,12 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
   assert.ok(health.bootstrap_inventory,'inventory finished bootstrapping');
   assert.equal(inventoryRequests,count/100);
   const archive=await mf.getR2Bucket('ARCHIVE');
+  let baseline;
   do{
    await new Promise(resolve=>setTimeout(resolve,50));
-   health=await (await stub.fetch('https://internal/health')).json();
-  }while(!health.coverage.some(c=>c.operation==='statuses' && c.complete) && Date.now()<deadline);
-  assert.ok(health.coverage.some(c=>c.operation==='statuses' && c.complete),'status baseline available');
+   baseline=await (await send(stub,'/query',{repository:repository.name,operation:'statuses',args:{sha:head}})).json();
+  }while(!baseline.complete && Date.now()<deadline);
+  assert.ok(baseline.complete,'status baseline available');
   await archive.put('fixture/status',JSON.stringify({sha:head,context:'build',state:'success',created_at:'2026-10-12T01:00:00Z'}));
   await send(stub,'/event',{key:'fixture/status',delivery:'status',event:'status',repository:repository.name,received:Date.now()});
   const status=await (await send(stub,'/query',{repository:repository.name,operation:'statuses',args:{sha:head}})).json();

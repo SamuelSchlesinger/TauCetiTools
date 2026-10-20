@@ -38,7 +38,7 @@ test('REST numeric identifiers retain their original digits',async()=>{
  }));
  try{
   const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName('200'));
-  const result=await (await send(stub,'/read',{repository,query:{operation:'issue_comments',args:{number:7}},page:1})).json();
+  const result=await (await send(stub,'/read',{repository,query:{operation:'issue_comments',args:{number:7}},api:'core',page:1})).json();
   assert.equal(result.api,'core');assert.equal(result.data[0].id,'18446744073709551600');
  }finally{await mf.dispose();}
 });
@@ -179,7 +179,7 @@ test('scalar GraphQL recipes declare only variables they use',async()=>{
   const declaration=payload.query.match(/^query\((.*?)\)\{/)[1];
   for(const [,name] of declaration.matchAll(/\$(\w+):/g)) assert.match(payload.query.slice(declaration.length+8),new RegExp('\\$'+name+'\\b'));
   assert.equal(Object.hasOwn(payload.variables,'cursor'),false);
-  return response({data:{rateLimit:{cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequest:{number:7,headRefOid:'a'.repeat(40),author:{login:'peer'},labels:{nodes:[]}}}}});
+  return response({data:{rateLimit:{cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequest:{number:7,state:'OPEN',headRefOid:'a'.repeat(40),author:{login:'peer'},labels:{totalCount:0,nodes:[]}}}}});
  });
  try{
   const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName('200'));
@@ -237,7 +237,7 @@ test('nested review histories checkpoint each page instead of monopolizing an in
   const rateLimit={cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()};
   if(query.includes('reviewThreads(')) return response({data:{rateLimit,repository:{pullRequest:{reviewThreads:{nodes:[{id:'thread',comments:{nodes:[{id:'c1',fullDatabaseId:'1',body:'first'}],pageInfo:{hasNextPage:true,endCursor:'a'}}}],pageInfo:{hasNextPage:false,endCursor:null}}}}}});
   assert.equal(variables.id,'thread');
-  return response({data:{rateLimit,node:{comments:{nodes:[{id:variables.cursor==='a'?'c2':'c3'}],pageInfo:{hasNextPage:variables.cursor==='a',endCursor:'b'}}}}});
+  return response({data:{rateLimit,node:{comments:{nodes:[{id:variables.cursor==='a'?'c2':'c3',fullDatabaseId:variables.cursor==='a'?'2':'3',body:'overflow comment'}],pageInfo:{hasNextPage:variables.cursor==='a',endCursor:'b'}}}}});
  });
  try {
   const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName('200'));
@@ -280,7 +280,7 @@ test('batch routing preserves scarce GraphQL quota when REST can carry the whole
  let calls=0;
  const mf=await runtime(async(req,u)=>{
   calls++;
-  if(u.pathname==='/graphql') return response({data:{rateLimit:{cost:1,remaining:1,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequest:{number:7,author:{login:'peer'},labels:{nodes:[]}}}}},'graphql',1);
+  if(u.pathname==='/graphql') return response({data:{rateLimit:{cost:1,remaining:1,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequest:{number:7,author:{login:'peer'},labels:{totalCount:0,nodes:[]}}}}},'graphql',1);
   return response([],'core');
  });
  try {
@@ -305,4 +305,140 @@ test('out-of-scope query fallback reveals no data and spends no installation quo
   assert.equal(calls,0);
   assert.equal((await mf.dispatchFetch('https://test/v1/query?repository=org/repo&operation=open_prs',{headers:{Authorization:'Bearer invalid'}})).status,401);
  } finally {await mf.dispose();}
+});
+
+test('malformed upstream JSON stays unavailable, preserves request ID, and retries through the same quota owner',async()=>{
+ let malformed=true,network=0;
+ const mf=await runtime(async()=>{network++;return malformed?new Response('not json',{status:200}):response({data:{rateLimit:{cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}});});
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const query={repository,query:{repository:repository.name,operation:'open_prs'},api:'graphql'};
+  const first=await stub.fetch('https://internal/read',{method:'POST',headers:{'x-request-id':'malformed-drill'},body:JSON.stringify(query)});
+  assert.equal(first.status,503);const error=await first.json();
+  assert.equal(error.unavailable,true);assert.equal(error.reason,'malformed_upstream_response');assert.equal(error.request_id,'malformed-drill');assert.equal(Object.hasOwn(error,'data'),false);
+  assert.equal(network,1,'no fallback fanout for a malformed response');
+  malformed=false;
+  const recovered=await (await send(stub,'/read',query)).json();
+  assert.deepEqual(recovered.data,[]);assert.equal(network,2,'one successful retry by the existing owner');
+ }finally{await mf.dispose();}
+});
+
+test('malformed responses without quota headers debit the existing owner budget once',async()=>{
+ let malformed=false;
+ const mf=await runtime(async()=>malformed?new Response('not JSON',{status:200}):response({data:{rateLimit:{cost:1,remaining:100,resetAt:new Date(Date.now()+300000).toISOString()},repository:{pullRequests:{nodes:[],pageInfo:{hasNextPage:false,endCursor:null}}}}},'graphql',100));
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const input={repository,query:{repository:repository.name,operation:'open_prs'},api:'graphql'};
+  assert.equal((await send(stub,'/read',input)).status,200);
+  const before=(await (await stub.fetch('https://internal/health')).json()).budgets.find(b=>b.resource==='graphql').remaining;
+  malformed=true;assert.equal((await send(stub,'/read',input)).status,503);
+  const after=(await (await stub.fetch('https://internal/health')).json()).budgets.find(b=>b.resource==='graphql').remaining;
+  assert.equal(before-after,1);
+ }finally{await mf.dispose();}
+});
+
+test('malformed status/header objects stay unavailable rather than becoming empty complete state',async()=>{
+ let network=0;
+ const mf=await runtime(async()=>{network++;return response({},'core');});
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  for(const query of [{operation:'statuses',args:{sha:'a'.repeat(40)}},{operation:'pr',args:{number:7}},{operation:'repository'}]) {
+   const before=network,result=await (await stub.fetch('https://internal/read',{method:'POST',headers:{'x-request-id':'shape-drill'},body:JSON.stringify({repository,query:{repository:repository.name,...query},api:'core'})})).json();
+   assert.equal(result.unavailable,true);assert.equal(result.reason,'malformed_upstream_response');assert.equal(result.request_id,'shape-drill');assert.equal(Object.hasOwn(result,'data'),false);assert.equal(network-before,1);
+  }
+ }finally{await mf.dispose();}
+});
+
+test('malformed collection rows and pagination never publish an empty complete collection',async()=>{
+ let network=0,graphql=false;
+ const mf=await runtime(async()=>{network++;return graphql?response({data:{repository:{pullRequests:{nodes:[],pageInfo:{}}}}}):response([{}],'core');});
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const read=(operation,api,args={})=>send(stub,'/read',{repository,query:{repository:repository.name,operation,args},api});
+  for(const [operation,args] of [['issue_comments',{number:7}],['workflow_jobs',{id:'9'}]]) {
+   const before=network,value=await (await read(operation,'core',args)).json();assert.equal(value.unavailable,true);assert.equal(Object.hasOwn(value,'data'),false);assert.equal(network-before,1);
+  }
+  graphql=true;const value=await (await read('open_prs','graphql')).json();assert.equal(value.unavailable,true);assert.equal(Object.hasOwn(value,'data'),false);
+ }finally{await mf.dispose();}
+});
+
+test('batch validation isolates malformed aliases without empty substitution or extra upstream requests',async()=>{
+ let payload,network=0;
+ const mf=await runtime(async()=>{network++;return response({data:payload});});
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const connection=nodes=>({nodes,pageInfo:{hasNextPage:false,endCursor:null}});
+  const comment={id:'node',fullDatabaseId:'18446744073709551600',body:'retained'};
+  const cases=[
+   ['statuses',{status:{}},{status:null},'malformed_upstream_response'],
+   ['issue_comments',{comments:{nodes:[],pageInfo:{}}},{comments:connection([comment])},'malformed_upstream_response'],
+   ['issue_comments',{comments:connection([{id:'node',fullDatabaseId:null,body:'cannot address by node id'}])},{comments:connection([comment])},'upstream_identity_unavailable'],
+   ['issue_comments',{comments:connection([{...comment,replyTo:{fullDatabaseId:null}}])},{comments:connection([comment])},'upstream_identity_unavailable'],
+   ['reactions',{reactions:connection([{content:'HEART'}])},{reactions:connection([{databaseId:'18446744073709551600',content:'HEART'}])},'upstream_identity_unavailable'],
+   ['review_threads',{reviewThreads:connection([{id:'thread',comments:connection([{...comment,body:null}])}])},{reviewThreads:connection([{id:'thread',comments:connection([comment])}])},'malformed_upstream_response']
+  ];
+  for(const [operation,bad,good,reason] of cases) {
+   payload=operation==='reactions'?{q0:bad,q1:good}:{repository:{q0:bad,q1:good}};
+   const jobs=[0,1].map(i=>({key:String(i),node_id:'node'+i,query:{operation,args:{number:7,sha:'a'.repeat(40),id:String(i+1)}}}));
+   const before=network,result=await (await stub.fetch('https://internal/batch',{method:'POST',headers:{'x-request-id':'batch-validation'},body:JSON.stringify({repository,jobs})})).json();
+   assert.equal(network-before,1);assert.equal(result.results[0].unavailable,true);assert.equal(result.results[0].reason,reason);
+   assert.equal(result.results[0].request_id,'batch-validation');assert.equal(Object.hasOwn(result.results[0],'data'),false);
+   assert.equal(Object.hasOwn(result.results[0],'retry_at'),false,'scheduler owns exponential retry');
+   assert.ok(Array.isArray(result.results[1].data),'valid sibling retained');
+   if(['issue_comments','reactions'].includes(operation))assert.equal(result.results[1].data[0].id,comment.fullDatabaseId);
+  }
+ }finally {await mf.dispose();}
+});
+
+
+test('label overflow restarts a pinned GraphQL traversal through the same quota owner',async()=>{
+ let network=0;
+ const labels=Array.from({length:101},(_,i)=>({name:'label-'+i}));
+ const mf=await runtime(async req=>{
+  network++;
+  if(new URL(req.url).pathname!=='/graphql')return response({number:7,state:'open',labels},'core');
+  const {query}=await req.json(),pr={number:7,state:'OPEN',headRefOid:'head',labels:{totalCount:101,nodes:labels.slice(0,100)}};
+  return response({data:{repository:query.includes('pullRequests(')?{pullRequests:{nodes:[pr],pageInfo:{hasNextPage:false,endCursor:null}}}:{pullRequest:pr}}});
+ });
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  for(const operation of ['open_prs','pr']) {
+   const before=network,result=await (await send(stub,'/read',{repository,query:{operation,args:{number:7}},api:'graphql',page:2,cursor:'page-two'})).json();
+   assert.deepEqual(result,{restart:true,api:'core'});assert.equal(network-before,1,'restart does not fan out');
+  }
+  const result=await (await send(stub,'/read',{repository,query:{operation:'pr',args:{number:7}},api:'core',page:1})).json();
+  assert.equal(result.data.labels.length,101);
+ }finally {await mf.dispose();}
+});
+
+test('malformed thread overflow cannot publish a partial complete history',async()=>{
+ let network=0;
+ const mf=await runtime(async()=>{network++;return response({data:{node:{comments:{nodes:[{id:'node',fullDatabaseId:null,body:'unaddressable'}],pageInfo:{hasNextPage:false,endCursor:null}}}}});});
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const nested={rows:[{id:'thread',comments:{nodes:[{id:'old',fullDatabaseId:'1',body:'retained'}],pageInfo:{hasNextPage:true,endCursor:'next'}}}]};
+  const result=await (await send(stub,'/read',{repository,query:{operation:'review_threads',args:{number:7}},nested})).json();
+  assert.equal(result.unavailable,true);assert.equal(result.reason,'upstream_identity_unavailable');assert.equal(Object.hasOwn(result,'data'),false);assert.equal(network,1);
+ }finally {await mf.dispose();}
+});
+
+test('malformed label connections stay unavailable and overflow waits for the REST quota reset',async()=>{
+ let labels,network=0;
+ const mf=await runtime(async req=>{
+  network++;
+  if(new URL(req.url).pathname!=='/graphql')return response([],'core',0);
+  return response({data:{repository:{pullRequest:{number:7,state:'OPEN',headRefOid:'head',labels}}}});
+ });
+ try {
+  const ns=await mf.getDurableObjectNamespace('INSTALLATIONS'),stub=ns.get(ns.idFromName(repository.installation));
+  const input={repository,query:{operation:'pr',args:{number:7}},api:'graphql'};
+  for(labels of [undefined,null,{nodes:[]},{totalCount:'0',nodes:[]},{totalCount:1,nodes:[null]},{totalCount:1,nodes:[{}]}]) {
+   const before=network,result=await (await send(stub,'/read',input)).json();
+   assert.equal(result.unavailable,true);assert.equal(result.reason,'malformed_upstream_response');assert.equal(Object.hasOwn(result,'data'),false);assert.equal(network-before,1);
+  }
+  await send(stub,'/read',{repository,query:{operation:'files',args:{number:7}},api:'core'});
+  labels={totalCount:101,nodes:Array.from({length:100},(_,i)=>({name:String(i)}))};
+  const before=network,result=await (await send(stub,'/read',input)).json();
+  assert.equal(result.deferred,true);assert.match(result.category,/primary/);assert.ok(result.retry_at>Date.now()+60000);assert.equal(network-before,1);
+ }finally {await mf.dispose();}
 });

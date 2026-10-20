@@ -198,7 +198,7 @@ test('daily archive checkpoints bounded pages and retains active R2 references',
   assert.equal((await (await state.fetch(new Request('https://internal/retained-object?key='+encodeURIComponent(key)))).json()).retained,true);
   assert.equal((await (await state.fetch(new Request('https://internal/retained-object?key=unused'))).json()).retained,true,'unreferenced objects retain an archive grace period');
   db.prepare('UPDATE retired_objects SET at=? WHERE key=?').run(Date.now()-9*86400000,'unused');
-  assert.equal((await (await state.fetch(new Request('https://internal/retained-object?key=unused'))).json()).retained,false);
+  assert.equal((await (await state.fetch(new Request('https://internal/retained-object?key=unused'))).json()).retained,true,'pinned recovery archives outlive the snapshot grace period');
  }finally{db.close();}
 });
 
@@ -324,4 +324,33 @@ test('REST exhaustion repairs a flat review history through its existing GraphQL
   const result=await state.query(q);assert.equal(result.complete,true);assert.equal(result.data[0].body,'retained review');
   assert.equal(db.prepare('SELECT wait_reason FROM jobs WHERE key=?').get(key).wait_reason,null);
  } finally {db.close();}
+});
+
+
+test('malformed upstream state retains coverage and backs off with a traceable request ID',async()=>{
+ const {state,db}=fixture();try {
+  state.setMeta('repository',{id:'100',name:'org/repo',installation:'200'});
+  const q={repository:'org/repo',operation:'issue_comments',args:{number:7}};await state.enqueue(q);
+  const key='issue_comments:{"number":7}',failure={unavailable:true,reason:'malformed_upstream_response',request_id:'upstream-trace'};
+  await state.refresh(db.prepare('SELECT * FROM jobs WHERE key=?').get(key),failure);
+  let row=db.prepare('SELECT * FROM jobs WHERE key=?').get(key);
+  assert.equal(row.wait_reason,failure.reason);assert.equal(row.attempt,1);assert.ok(row.due>=Date.now()+59000);
+  await state.refresh(row,failure);row=db.prepare('SELECT * FROM jobs WHERE key=?').get(key);
+  assert.equal(row.attempt,2);assert.ok(row.due>=Date.now()+119000);
+  assert.equal(state.meta('last_upstream_failure').request_id,'upstream-trace');
+  assert.equal(db.prepare('SELECT COUNT(*) n FROM collections WHERE complete=1').get().n,0);
+ }finally {db.close();}
+});
+
+test('whole-batch malformed responses retain the upstream trace and scheduler backoff',async()=>{
+ const {state,db,env}=fixture();try {
+  state.setMeta('repository',{id:'100',name:'org/repo',installation:'200'});
+  env.INSTALLATIONS={idFromName:id=>id,get:()=>({fetch:async()=>Response.json({unavailable:true,reason:'malformed_upstream_response',request_id:'batch-trace'},{status:503})})};
+  for(const number of [7,8])await state.enqueue({repository:'org/repo',operation:'issue_comments',args:{number}});
+  await state.dispatch(state.claim(state.nextJob()));
+  for(const row of db.prepare('SELECT attempt,wait_reason,due FROM jobs').all()) {
+   assert.equal(row.wait_reason,'malformed_upstream_response');assert.equal(row.attempt,1);assert.ok(row.due>=Date.now()+59000);
+  }
+  assert.equal(state.meta('last_upstream_failure').request_id,'batch-trace');
+ }finally {db.close();}
 });

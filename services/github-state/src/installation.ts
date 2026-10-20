@@ -2,6 +2,8 @@ import { DurableObject } from 'cloudflare:workers';
 import { Env, json, Repository, stub, parseGitHub, digest } from './protocol';
 import { Recipe, extract, recipes, batchQuery, batchLimit } from './catalog';
 import { settings } from './reconciliation';
+import { AccountingMetrics } from './monitoring';
+import { classify, log, requestId } from './storage';
 
 class QuotaDeferred extends Error {
   constructor(readonly result:any) { super('GitHub quota deferred'); }
@@ -10,6 +12,9 @@ class QuotaDeferred extends Error {
 export class InstallationScheduler extends DurableObject<Env> {
   private tokenFlight?:Promise<string>;
   private auditFlight?:Promise<void>;
+  private accountingMetrics=new AccountingMetrics();
+  private accountingFailure:any;
+  private preparedAccounting:any;
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS budgets(resource TEXT PRIMARY KEY,remaining INTEGER,lim INTEGER,reset INTEGER,blocked INTEGER DEFAULT 0);
@@ -99,13 +104,14 @@ export class InstallationScheduler extends DurableObject<Env> {
     const deferred=this.deferral(resource,predicted);if(deferred) throw new QuotaDeferred(deferred);
     const reservation=crypto.randomUUID();
     this.ctx.storage.sql.exec('INSERT INTO reservations VALUES(?,?,?,?)',reservation,resource,predicted,Date.now()+settings(this.env).lease_ms);
+    let observedDebit=false;
     try {
     const headers: Record<string,string> = {'Authorization':'Bearer ' + token,'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28','User-Agent':'tauceti-github-state','Content-Type':'application/json'};
     if (etag) headers['If-None-Match'] = etag;
     const response = await fetch('https://api.github.com' + path,{method,headers,body:method === 'POST' ? JSON.stringify(body) : undefined,signal:AbortSignal.timeout(12000)});
     const text = await response.text();
-    let parsed: any;
-    try { parsed = text ? parseGitHub(text) : {}; } catch { parsed = {}; }
+    let parsed: any,malformed=false;
+    try {parsed=text?parseGitHub(text):{};if(!parsed || typeof parsed!=='object') {malformed=true;parsed={};}}catch {parsed={};malformed=true;}
     const quotaHeaders=new Headers(response.headers);
     if (api==='app' || api==='authentication') quotaHeaders.set('x-ratelimit-resource','app-core');
     if (parsed.data?.rateLimit && !quotaHeaders.has('x-ratelimit-remaining')) {
@@ -114,11 +120,20 @@ export class InstallationScheduler extends DurableObject<Env> {
       quotaHeaders.set('x-ratelimit-reset',String(Date.parse(parsed.data.rateLimit.resetAt)/1000));
     }
     this.observe(quotaHeaders);
+    observedDebit=quotaHeaders.has('x-ratelimit-remaining');
     const cost = parsed.data?.rateLimit?.cost;
     const points = typeof cost === 'number' ? cost : api === 'core' ? response.status===304?0:1 : null;
-    this.ctx.storage.sql.exec('INSERT INTO accounting(at,operation,api,method,endpoint,status,points,latency,bytes,shape,batch_size,predicted) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',Date.now(),operation,api,method,path.split('?')[0].replace(/\/\d+(?=\/|$)/g,'/{id}'),response.status,points,Date.now()-started,text.length,shape,batchSize,predicted);
-    if (!quotaHeaders.has('x-ratelimit-remaining')) this.ctx.storage.sql.exec('UPDATE budgets SET remaining=MAX(0,remaining-?) WHERE resource=?',points ?? predicted,resource);
-    const errors = parsed.errors || [];
+    try {
+      this.accountingMetrics.record({api,operation,shape,batch_size:batchSize,points,bytes:text.length,latency:Date.now()-started,predicted});
+      this.ctx.storage.sql.exec('INSERT INTO accounting(at,operation,api,method,endpoint,status,points,latency,bytes,shape,batch_size,predicted) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',Date.now(),operation,api,method,path.split('?')[0].replace(/\/\d+(?=\/|$)/g,'/{id}'),response.status,points,Date.now()-started,text.length,shape,batchSize,predicted);
+      this.accountingFailure=null;
+    }catch(error) {
+      this.accountingFailure={at:Date.now(),reason:classify(error)};
+      try {log('installation_telemetry_failed',{operation,reason:classify(error)});}catch {}
+    }
+    if (!quotaHeaders.has('x-ratelimit-remaining')) {this.ctx.storage.sql.exec('UPDATE budgets SET remaining=MAX(0,remaining-?) WHERE resource=?',points ?? predicted,resource);observedDebit=true;}
+    if((malformed || !text || parsed.errors!==undefined && !Array.isArray(parsed.errors)) && [200,201].includes(response.status))throw new Error('malformed_upstream_response');
+    const errors = Array.isArray(parsed.errors)?parsed.errors:[];
     const logicalQuota=errors.some((e:any)=>['RATE_LIMIT','RATE_LIMITED'].includes(e.type) || ['RATE_LIMIT','RATE_LIMITED'].includes(e.extensions?.code));
     const failed = response.status === 403 || response.status === 429 || logicalQuota;
     if (failed) {
@@ -145,12 +160,18 @@ export class InstallationScheduler extends DurableObject<Env> {
     return {status:response.status,body:parsed,etag:response.headers.get('etag'),link:response.headers.get('link'),points,bytes:text.length,elapsed_ms:Date.now()-started,remaining:response.headers.get('x-ratelimit-remaining'),limit:response.headers.get('x-ratelimit-limit')};
     } catch(error) {
       // A lost response can still have consumed quota; retain the predicted debit.
-      this.ctx.storage.sql.exec('UPDATE budgets SET remaining=MAX(0,remaining-?) WHERE resource=?',predicted,resource);
+      if(!observedDebit)this.ctx.storage.sql.exec('UPDATE budgets SET remaining=MAX(0,remaining-?) WHERE resource=?',predicted,resource);
       throw error;
     } finally {this.ctx.storage.sql.exec('DELETE FROM reservations WHERE id=?',reservation);}
   }
   // All GitHub requests from all repository objects pass through this installation owner.
   // Budget selection affects background reads only; authoring writes never enter this service.
+  unavailableResponse(input:any,operation:string,api:string,error?:unknown):any {
+    const request_id=/^[A-Za-z0-9-]{1,64}$/.test(input.request_id || '')?input.request_id:crypto.randomUUID();
+    const reason=error instanceof Error && error.message==='upstream_identity_unavailable'?'upstream_identity_unavailable':'malformed_upstream_response';
+    try {log('upstream_response_unavailable',{request_id,operation,api,reason});}catch {}
+    return {unavailable:true,reason,request_id};
+  }
   async read(input: any): Promise<Response> {
     if (input.nested) return this.threadPage(input);
     const candidates = recipes(input.repository.name,input.query,input.cursor,input.page).map(r=>({...r,cost:this.estimate(input.query.operation,r.api,undefined,r.cost)}));
@@ -193,7 +214,14 @@ export class InstallationScheduler extends DurableObject<Env> {
       if (result.status === 304) return json({unchanged:true,api:recipe.api,etag:result.etag});
       if (result.status >= 400 || result.body.errors?.length) return json({unavailable:true,status:result.status,retry_at:Date.now()+60000});
       let data;
-      try { data=extract(recipe,result.body); } catch { continue; }
+      try {data=extract(recipe,result.body);}catch(error) {
+        if(error instanceof Error && error.message==='labels overflow') {
+          if(input.api) {const alternative=this.alternate(input);if(alternative)return json(alternative);}
+          if(candidates.some(r=>r.api==='core') && !available.some(r=>r.api==='core')) {const wait=this.deferral('core',1);if(wait)return json(wait);}
+          continue;
+        }
+        return json(this.unavailableResponse(input,input.query.operation,recipe.api,error));
+      }
       if (input.query.operation==='review_threads') {
         if (data.rows.some((t:any)=>t.comments?.pageInfo?.hasNextPage)) return json({continuation:{rows:data.rows,cursor:data.cursor,etag:result.etag},api:'graphql',points:result.points});
       }
@@ -212,8 +240,11 @@ export class InstallationScheduler extends DurableObject<Env> {
     const request=()=>this.http('/graphql',token,'POST',body,(input.reference?'reference_':'')+'review_thread_overflow','graphql');
     let result=await request();if(result.status===401) {token=await this.token(input.repository.installation,true);result=await request();}
     if(result.deferred || result.status!==200 || result.body.errors?.length) return json({...result,unavailable:true});
-    const conn=result.body.data?.node?.comments;
-    if(!Array.isArray(conn?.nodes) || !conn.pageInfo || conn.pageInfo.hasNextPage && conn.pageInfo.endCursor===cursor) throw new Error('incomplete thread overflow');
+    let conn:any;
+    try {
+      const recipe:Recipe={operation:'review_comments',api:'graphql',path:'/graphql',cost:1,connection:['node','comments'],collection:true,normalize:(value:any)=>value,variables:{cursor}};
+      extract(recipe,result.body);conn=result.body.data.node.comments;
+    }catch(error) {return json(this.unavailableResponse(input,'review_thread_overflow','graphql',error));}
     const ids=new Set(thread.comments.nodes.map((n:any)=>n.id));
     thread.comments.nodes.push(...conn.nodes.filter((n:any)=>!ids.has(n.id)));thread.comments.pageInfo=conn.pageInfo;
     return pending.rows.some((t:any)=>t.comments?.pageInfo?.hasNextPage)?json({continuation:pending,api:'graphql',points:result.points}):json({data:pending.rows,cursor:pending.cursor,etag:pending.etag,api:'graphql',points:result.points});
@@ -257,13 +288,17 @@ export class InstallationScheduler extends DurableObject<Env> {
       if (errors.some((e:any)=>e.path?.includes('q'+i))) return {key:j.key,unavailable:true,retry_at:Date.now()+60000};
       const item=operation==='reactions'?result.body.data?.['q'+i]:result.body.data?.repository?.['q'+i];
       if (!item) return {key:j.key,unavailable:true,retry_at:Date.now()+60000};
-      if (operation==='statuses') return {key:j.key,data:(item.status?.contexts || []).map((c:any)=>({context:c.context,state:c.state,startedAt:c.createdAt})),api:'graphql'};
-      const conn=item[operation==='review_threads'?'reviewThreads':operation==='reactions'?'reactions':'comments'];
-      if (!conn?.nodes || !conn.pageInfo) return {key:j.key,unavailable:true,retry_at:Date.now()+60000};
-      if (operation==='review_threads' && conn.nodes.some((t:any)=>t.comments?.pageInfo?.hasNextPage)) return {key:j.key,continuation:{rows:conn.nodes,cursor:conn.pageInfo.hasNextPage?conn.pageInfo.endCursor:undefined},api:'graphql'};
-      const recipe=operation==='issue_comments'?recipes(input.repository.name,j.query).find(r=>r.api==='graphql'):null;
-      const rows=operation==='reactions'?conn.nodes.map((n:any)=>({id:String(n.databaseId),content:emojis[n.content],created_at:n.createdAt,user:n.user || {}})):recipe?conn.nodes.map(recipe.normalize):conn.nodes;
-      return {key:j.key,data:rows,api:'graphql',cursor:conn.pageInfo.hasNextPage?conn.pageInfo.endCursor:undefined};
+      try {
+        const normalize=operation==='statuses'?(value:any)=>(value.status===null?[]:value.status.contexts.map((c:any)=>({context:c.context,state:c.state,startedAt:c.createdAt})))
+          :operation==='issue_comments'?recipes(input.repository.name,j.query).find(r=>r.api==='graphql')!.normalize
+          :operation==='reactions'?(node:any)=>{if(!emojis[node.content])throw new Error('unsupported reaction');return {id:String(node.databaseId),content:emojis[node.content],created_at:node.createdAt,user:node.user || {}};}:(value:any)=>value;
+        const field=operation==='review_threads'?'reviewThreads':operation==='reactions'?'reactions':'comments';
+        const recipe:Recipe={operation,api:'graphql',path:'/graphql',cost:1,collection:operation!=='statuses',connection:operation==='statuses'?['item']:['item',field],normalize};
+        const data=extract(recipe,{data:{item}});
+        if(operation==='review_threads' && data.rows.some((thread:any)=>thread.comments.pageInfo.hasNextPage))return {key:j.key,continuation:{rows:data.rows,cursor:data.cursor},api:'graphql'};
+        return {key:j.key,data:data.rows,api:'graphql',cursor:data.cursor};
+      }catch(error) {return {key:j.key,...this.unavailableResponse(input,operation,'graphql',error)};}
+
     })});
   }
   async measure(input:any): Promise<Response> {
@@ -346,23 +381,51 @@ export class InstallationScheduler extends DurableObject<Env> {
       }
     }
   }
+  expireAccounting():void {
+    try {
+      // Accounting is append-only with the application clock and integer PK.
+      // Restart at the oldest row, stopping at the live diagnostic window.
+      const rows=this.ctx.storage.sql.exec<any>('SELECT id,at FROM accounting ORDER BY id LIMIT 5000').toArray();
+      const cutoff=Date.now()-7*86400000,ids:number[]=[];
+      for(const row of rows) {if(row.at>=cutoff)break;ids.push(row.id);}
+      for(let i=0;i<ids.length;i+=50) {
+        const group=ids.slice(i,i+50);
+        this.ctx.storage.sql.exec('DELETE FROM accounting WHERE at<? AND id IN ('+group.map(()=>'?').join(',')+')',cutoff,...group);
+      }
+    }catch(error) {log('installation_retention_failed',{reason:classify(error)});}
+  }
+  prepareAccounting():void {
+    const now=Date.now();if(this.preparedAccounting && now-this.preparedAccounting.at<60000)return;
+    try {
+      const source='(SELECT api,operation,shape,batch_size,at,points,bytes,latency,predicted FROM accounting ORDER BY id DESC LIMIT 10000)';
+      const bounds=this.ctx.storage.sql.exec<any>('SELECT COUNT(*) n,MIN(at) oldest FROM '+source).one();
+      this.preparedAccounting={at:now,scope:'retained_accounting_hour',window_complete:bounds.n<10000 || bounds.oldest<now-3600000,scanned_limit:10000,
+        hour:this.ctx.storage.sql.exec('SELECT api,operation,COUNT(*) requests,SUM(points) points,SUM(points IS NULL) unmeasured,SUM(bytes) bytes,AVG(latency) latency FROM '+source+' WHERE at>? GROUP BY api,operation',now-3600000).toArray(),
+        recipes:this.ctx.storage.sql.exec('SELECT api,operation,shape,batch_size,COUNT(*) requests,SUM(points) points,AVG(points) mean_points,MAX(points) max_points,AVG(predicted) predicted,AVG(latency) latency,MAX(latency) max_latency FROM '+source+' WHERE at>? GROUP BY api,operation,shape,batch_size',now-3600000).toArray()};
+    }catch(error) {log('installation_health_prepare_failed',{reason:classify(error)});}
+  }
   async fetch(req: Request): Promise<Response> {
     try {
       const path = new URL(req.url).pathname;
-      if (path==='/read') return await this.read(await req.json());
-      if (path==='/batch') return await this.batch(await req.json());
-      if (path==='/measure') return await this.measure(await req.json());
+      if (path==='/read') return await this.read({...await req.json() as object,request_id:requestId(req)});
+      if (path==='/batch') return await this.batch({...await req.json() as object,request_id:requestId(req)});
+      if (path==='/measure') return await this.measure({...await req.json() as object,request_id:requestId(req)});
+      if (path==='/maintenance') {
+        this.expireAccounting();this.prepareAccounting();return json({ok:true,telemetry_failure:this.accountingFailure});
+      }
       if (path==='/audit') {
-        this.ctx.storage.sql.exec('DELETE FROM accounting WHERE at<?',Date.now()-7*86400000);
+        this.expireAccounting();
         const repo=await req.json() as Repository;
         this.auditFlight ||= this.audit(repo).finally(()=>{this.auditFlight=undefined;});
         await this.auditFlight;return json({ok:true});
       }
-      if (path==='/health') return json({redelivery_failure:await this.ctx.storage.get('last_redelivery_failure') || null,reconciliation_version:2,deployment_id:this.env.CF_VERSION?.id,settings:settings(this.env),inflight:this.ctx.storage.sql.exec('SELECT resource,COUNT(*) requests,SUM(cost) reserved_points FROM reservations WHERE expires>? GROUP BY resource',Date.now()).toArray(),budgets:this.ctx.storage.sql.exec('SELECT * FROM budgets').toArray(),quota_types:this.ctx.storage.sql.exec('SELECT * FROM quota_types').toArray(),hour:this.ctx.storage.sql.exec('SELECT api,operation,COUNT(*) requests,SUM(points) points,SUM(points IS NULL) unmeasured,SUM(bytes) bytes,AVG(latency) latency FROM accounting WHERE at>? GROUP BY api,operation',Date.now()-3600000).toArray(),recipes:this.ctx.storage.sql.exec('SELECT api,operation,shape,batch_size,COUNT(*) requests,SUM(points) points,AVG(points) mean_points,MAX(points) max_points,AVG(predicted) predicted,AVG(latency) latency,MAX(latency) max_latency FROM accounting WHERE at>? GROUP BY api,operation,shape,batch_size',Date.now()-3600000).toArray()});
+      if (path==='/health') return json({redelivery_failure:await this.ctx.storage.get('last_redelivery_failure') || null,reconciliation_version:2,deployment_id:this.env.CF_VERSION?.id,settings:settings(this.env),inflight:this.ctx.storage.sql.exec('SELECT resource,COUNT(*) requests,SUM(cost) reserved_points FROM reservations WHERE expires>? GROUP BY resource',Date.now()).toArray(),budgets:this.ctx.storage.sql.exec('SELECT * FROM budgets').toArray(),quota_types:this.ctx.storage.sql.exec('SELECT * FROM quota_types').toArray(),...(this.preparedAccounting?{...this.preparedAccounting,stale:Date.now()-this.preparedAccounting.at>180000}:this.accountingMetrics.snapshot()),telemetry_failure:this.accountingFailure});
       return json({error:'not_found'},404);
     } catch (error) {
       if (error instanceof QuotaDeferred) return json(error.result);
-      console.error('installation operation failed',error instanceof Error?error.message:'unknown'); return json({unavailable:true,retry_at:Date.now()+60000},503);
+      const reason=error instanceof Error && error.message==='malformed_upstream_response'?'malformed_upstream_response':classify(error),request_id=requestId(req);
+      try {log('installation_operation_failed',{reason,request_id});}catch {}
+      return json({unavailable:true,reason,request_id,...(reason==='malformed_upstream_response'?{}:{retry_at:Date.now()+60000})},503);
     }
   }
 }

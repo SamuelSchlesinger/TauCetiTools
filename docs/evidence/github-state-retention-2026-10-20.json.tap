@@ -1,0 +1,1173 @@
+TAP version 13
+# {"event":"repository_storage_failure","operation":"request:/activity","reason":"internal","degraded":false,"message":"Reporting attempted upstream/scheduler access"}
+# {"event":"repository_request_failed","request_id":"171aca35-f23c-4ba1-92b9-609b564de5a2","path":"/activity","reason":"internal"}
+# Subtest: reporting missing/never-configured resources creates no demand, jobs, alarms or upstream calls
+ok 1 - reporting missing/never-configured resources creates no demand, jobs, alarms or upstream calls
+  ---
+  duration_ms: 17.585936
+  type: 'test'
+  ...
+# Subtest: stale cached closed/merged PRs remain readable without reactivating polling
+ok 2 - stale cached closed/merged PRs remain readable without reactivating polling
+  ---
+  duration_ms: 2.2939
+  type: 'test'
+  ...
+# Subtest: unavailable stored resource fails without falling back to upstream repair
+ok 3 - unavailable stored resource fails without falling back to upstream repair
+  ---
+  duration_ms: 2.216175
+  type: 'test'
+  ...
+# Subtest: LOC uses complete cached files at the exact PR head without scheduling work
+ok 4 - LOC uses complete cached files at the exact PR head without scheduling work
+  ---
+  duration_ms: 3.314262
+  type: 'test'
+  ...
+# Subtest: background Bors receipt import is shared and rate limited; activity reads never fetch
+ok 5 - background Bors receipt import is shared and rate limited; activity reads never fetch
+  ---
+  duration_ms: 3.075668
+  type: 'test'
+  ...
+# Subtest: promotion receipts retain exact approved PR heads and the actual recorded promotion time
+ok 6 - promotion receipts retain exact approved PR heads and the actual recorded promotion time
+  ---
+  duration_ms: 0.984229
+  type: 'test'
+  ...
+# Subtest: staging, CI success, other bases and mismatched construction never prove a landing
+ok 7 - staging, CI success, other bases and mismatched construction never prove a landing
+  ---
+  duration_ms: 0.293254
+  type: 'test'
+  ...
+# Subtest: receipt fetch is restricted to the existing stored Bors journal and refuses redirects
+ok 8 - receipt fetch is restricted to the existing stored Bors journal and refuses redirects
+  ---
+  duration_ms: 5.216371
+  type: 'test'
+  ...
+# Subtest: Workers runtime accepts the binding fetch options and never follows redirects
+ok 9 - Workers runtime accepts the binding fetch options and never follows redirects
+  ---
+  duration_ms: 177.859942
+  type: 'test'
+  ...
+# Subtest: production receipt reads use the explicit service fetcher without public-network fallback
+ok 10 - production receipt reads use the explicit service fetcher without public-network fallback
+  ---
+  duration_ms: 0.683403
+  type: 'test'
+  ...
+# Subtest: full fenced export contains every table, exact integers, timestamps, leases and R2 manifest; restart every step
+ok 11 - full fenced export contains every table, exact integers, timestamps, leases and R2 manifest; restart every step
+  ---
+  duration_ms: 79.78805
+  type: 'test'
+  ...
+# Subtest: freeze fences all mutation routes and alarm dispatch, while stored reads/304/legacy cursors retain timestamps
+ok 12 - freeze fences all mutation routes and alarm dispatch, while stored reads/304/legacy cursors retain timestamps
+  ---
+  duration_ms: 5.643765
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"event_parked","delivery":"during-freeze","repository":"org/repo","reason":"planned_migration"}
+# {"event":"installation_maintenance_failed","reason":"internal"}
+# {"event":"delivery_audit_skipped","repository":"org/repo","degraded":false,"status":503}
+# Subtest: in-flight event finishes before bookmark; new input parks even beyond retry horizon and survives retention
+ok 13 - in-flight event finishes before bookmark; new input parks even beyond retry horizon and survives retention
+  ---
+  duration_ms: 28.867247
+  type: 'test'
+  ...
+# Subtest: production and wrong identity are rejected; no caller assertion enables cutover
+ok 14 - production and wrong identity are rejected; no caller assertion enables cutover
+  ---
+  duration_ms: 3.437595
+  type: 'test'
+  ...
+# Subtest: unknown tables and unavailable authoritative bookmark fail closed
+ok 15 - unknown tables and unavailable authoritative bookmark fail closed
+  ---
+  duration_ms: 2.76607
+  type: 'test'
+  ...
+# Subtest: restart around before-commit export and validation checkpoint failures
+ok 16 - restart around before-commit export and validation checkpoint failures
+  ---
+  duration_ms: 49.92595
+  type: 'test'
+  ...
+# Subtest: restart around after-commit export and validation checkpoint failures
+ok 17 - restart around after-commit export and validation checkpoint failures
+  ---
+  duration_ms: 42.503418
+  type: 'test'
+  ...
+# Subtest: verification rejects missing R2 references and changed/corrupt source pages; abandon retains archives
+ok 18 - verification rejects missing R2 references and changed/corrupt source pages; abandon retains archives
+  ---
+  duration_ms: 37.461205
+  type: 'test'
+  ...
+# Subtest: public migration endpoint requires admin auth and never exposes stored rows
+ok 19 - public migration endpoint requires admin auth and never exposes stored rows
+  ---
+  duration_ms: 2.969381
+  type: 'test'
+  ...
+# Subtest: final receipt interruption resumes without repeating export; a new generation requires explicit abandonment
+ok 20 - final receipt interruption resumes without repeating export; a new generation requires explicit abandonment
+  ---
+  duration_ms: 22.76997
+  type: 'test'
+  ...
+# Subtest: an initial barrier upload failure is retryable in the same process
+ok 21 - an initial barrier upload failure is retryable in the same process
+  ---
+  duration_ms: 17.239252
+  type: 'test'
+  ...
+# Subtest: a cold migration-control outage fences writes but keeps complete stored SQL reads available
+ok 22 - a cold migration-control outage fences writes but keeps complete stored SQL reads available
+  ---
+  duration_ms: 3.699884
+  type: 'test'
+  ...
+# Subtest: an abandoned generation cannot overwrite its retained archive after another generation
+ok 23 - an abandoned generation cannot overwrite its retained archive after another generation
+  ---
+  duration_ms: 20.651099
+  type: 'test'
+  ...
+# Subtest: stale checkpoint writers cannot overwrite a newer control record
+ok 24 - stale checkpoint writers cannot overwrite a newer control record
+  ---
+  duration_ms: 2.509359
+  type: 'test'
+  ...
+# Subtest: noninitial export statements seek directly into the rowid index
+ok 25 - noninitial export statements seek directly into the rowid index
+  ---
+  duration_ms: 2.239249
+  type: 'test'
+  ...
+# Subtest: expired staging records an importer recovery requirement without mutating source jobs
+ok 26 - expired staging records an importer recovery requirement without mutating source jobs
+  ---
+  duration_ms: 34.954239
+  type: 'test'
+  ...
+# Subtest: production startup and ingress do not depend on test migration control reads
+ok 27 - production startup and ingress do not depend on test migration control reads
+  ---
+  duration_ms: 10.938113
+  type: 'test'
+  ...
+# Subtest: typed cells round-trip REAL extremes, NULL and BLOB values
+ok 28 - typed cells round-trip REAL extremes, NULL and BLOB values
+  ---
+  duration_ms: 2.027865
+  type: 'test'
+  ...
+# Subtest: real R2 conditional writes enforce checkpoint and generation ownership
+ok 29 - real R2 conditional writes enforce checkpoint and generation ownership
+  ---
+  duration_ms: 279.426553
+  type: 'test'
+  ...
+# Subtest: a planned source freeze retains degraded stored reads with their original timestamps
+ok 30 - a planned source freeze retains degraded stored reads with their original timestamps
+  ---
+  duration_ms: 4.267094
+  type: 'test'
+  ...
+# Subtest: a new deployment can abandon the same source object while export remains fenced
+ok 31 - a new deployment can abandon the same source object while export remains fenced
+  ---
+  duration_ms: 4.424357
+  type: 'test'
+  ...
+# Subtest: a failed new intent cannot abandon an older generation loaded from R2
+ok 32 - a failed new intent cannot abandon an older generation loaded from R2
+  ---
+  duration_ms: 2.858327
+  type: 'test'
+  ...
+# Subtest: legacy initialization resumes automatically after control reads recover
+ok 33 - legacy initialization resumes automatically after control reads recover
+  ---
+  duration_ms: 2.303545
+  type: 'test'
+  ...
+# Subtest: workerd SQLite REAL encoding matches the archive round-trip contract
+ok 34 - workerd SQLite REAL encoding matches the archive round-trip contract
+  ---
+  duration_ms: 69.747239
+  type: 'test'
+  ...
+# Subtest: table discovery only excludes literal engine prefixes
+ok 35 - table discovery only excludes literal engine prefixes
+  ---
+  duration_ms: 3.334092
+  type: 'test'
+  ...
+# Subtest: freeze drains an in-flight archival job and prevents its SQL publication
+ok 36 - freeze drains an in-flight archival job and prevents its SQL publication
+  ---
+  duration_ms: 30.455541
+  type: 'test'
+  ...
+# Subtest: source migration inventories and verifies the expiring staging-spill prefix
+ok 37 - source migration inventories and verifies the expiring staging-spill prefix
+  ---
+  duration_ms: 34.166641
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"d1","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"d1","repository":"org/repo","reason":"storage_full"}
+# Subtest: a full repository parks deliveries instead of spending queue retries
+ok 38 - a full repository parks deliveries instead of spending queue retries
+  ---
+  duration_ms: 14.523978
+  type: 'test'
+  ...
+# {"event":"event_park_failed","delivery":"d2","attempts":1,"reason":"internal"}
+# {"event":"event_parked","delivery":"d2","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_park_failed","delivery":"d3","attempts":30,"reason":"internal"}
+# {"event":"event_retry","delivery":"d4","attempts":1,"reason":"internal"}
+# Subtest: R2 failure while parking retries with bounded backoff and never acknowledges
+ok 39 - R2 failure while parking retries with bounded backoff and never acknowledges
+  ---
+  duration_ms: 2.728705
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"d4","repository":"org/repo","reason":"retry_budget:internal"}
+# {"event":"event_retry","delivery":"d5","attempts":3,"reason":"transport"}
+# {"event":"event_parked","delivery":"d5","repository":"org/repo","reason":"retry_budget:transport"}
+# Subtest: ordinary failures back off, then park before the queue retry budget is spent
+ok 40 - ordinary failures back off, then park before the queue retry budget is spent
+  ---
+  duration_ms: 0.990147
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"r1","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"r2","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"r3","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"r4","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"r4","repository":"org/repo","reason":"storage_full"}
+# Subtest: replay removes pointers only after the receipt commits; crashes repeat harmlessly
+ok 41 - replay removes pointers only after the receipt commits; crashes repeat harmlessly
+  ---
+  duration_ms: 8.704122
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"bad","repository":"org/repo","reason":"storage_full"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"bad","error":"internal"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"bad","error":"internal"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"bad","error":"internal"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"bad","error":"internal"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"bad","error":"internal"}
+# {"event":"event_parked","delivery":"good","repository":"org/repo","reason":"storage_full"}
+# {"event":"repository_storage_failure","operation":"repair_dispatch","reason":"internal","degraded":false,"message":"repair dispatch failed"}
+# {"event":"repository_storage_failure","operation":"survey_hydration","reason":"internal","degraded":false,"message":"invalidation failed"}
+# {"event":"repository_storage_failure","operation":"retention_load","reason":"internal","degraded":false,"message":"Cannot create proxy with a non-object as target or handler"}
+# {"event":"repository_storage_failure","operation":"retention_checkpoint_load","reason":"internal","degraded":false,"message":"Cannot create proxy with a non-object as target or handler"}
+# Subtest: a persistently failing parked event is held aside without blocking newer events
+ok 42 - a persistently failing parked event is held aside without blocking newer events
+  ---
+  duration_ms: 5.807588
+  type: 'test'
+  ...
+# Subtest: legacy SQL cursors and R2 cursors validate query, coverage and expiry
+ok 43 - legacy SQL cursors and R2 cursors validate query, coverage and expiry
+  ---
+  duration_ms: 10.168963
+  type: 'test'
+  ...
+# Subtest: expiry runs before repair and hydration, survives their failure, and keeps semantic data
+ok 44 - expiry runs before repair and hydration, survives their failure, and keeps semantic data
+  ---
+  duration_ms: 7.145931
+  type: 'test'
+  ...
+# Subtest: cold start on a current schema performs no writes
+ok 45 - cold start on a current schema performs no writes
+  ---
+  duration_ms: 2.135135
+  type: 'test'
+  ...
+# Subtest: verified cleanup never deletes a reused rowid written after the export began
+ok 46 - verified cleanup never deletes a reused rowid written after the export began
+  ---
+  duration_ms: 0.880845
+  type: 'test'
+  ...
+# Subtest: a replayed long-parked event keeps its receipt through maintenance
+ok 47 - a replayed long-parked event keeps its receipt through maintenance
+  ---
+  duration_ms: 2.73926
+  type: 'test'
+  ...
+# Subtest: a database at the size limit starts read-only: no migration, degraded until a verified probe
+ok 48 - a database at the size limit starts read-only: no migration, degraded until a verified probe
+  ---
+  duration_ms: 11.714863
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"thrown","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"recorded","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_retry","delivery":"nomem","attempts":1,"reason":"storage_error"}
+# Subtest: a storage-full exception from the reset object parks immediately and records the state
+ok 49 - a storage-full exception from the reset object parks immediately and records the state
+  ---
+  duration_ms: 0.791874
+  type: 'test'
+  ...
+# Subtest: a recorded full state stops legacy migration even below the size threshold
+ok 50 - a recorded full state stops legacy migration even below the size threshold
+  ---
+  duration_ms: 2.170908
+  type: 'test'
+  ...
+# Subtest: degraded workflow reads never write: CI is not mirrored
+ok 51 - degraded workflow reads never write: CI is not mirrored
+  ---
+  duration_ms: 1.939325
+  type: 'test'
+  ...
+# Subtest: a failure report older than a verified probe cannot undo recovery
+ok 52 - a failure report older than a verified probe cannot undo recovery
+  ---
+  duration_ms: 5.692197
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"c0","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c1","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c2","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c3","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c4","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c5","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c7","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c6","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c8","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c9","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c10","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c11","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c12","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c13","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c14","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c15","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c17","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c16","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c18","repository":"org/repo","reason":"storage_full"}
+# {"event":"event_parked","delivery":"c19","repository":"org/repo","reason":"storage_full"}
+# Subtest: a batch parks its messages concurrently
+ok 53 - a batch parks its messages concurrently
+  ---
+  duration_ms: 102.992615
+  type: 'test'
+  ...
+# Subtest: a degraded mirror that stopped changing is reported unavailable, not served stale
+ok 54 - a degraded mirror that stopped changing is reported unavailable, not served stale
+  ---
+  duration_ms: 3.93962
+  type: 'test'
+  ...
+# {"event":"repository_storage_failure","operation":"retention_checkpoint","reason":"internal","degraded":false,"message":"R2 put failed"}
+# {"event":"repository_storage_failure","operation":"observation_persistence","reason":"internal","degraded":false,"message":"R2 put failed"}
+# {"event":"github_state_capacity_alarm","repository":"100","level":"critical","at":1792474075507,"capacity":{"at":1792474075507,"bytes":0,"allowance":10737418240,"backend":"sqlite","allowance_kind":"durable_object_hard_limit","growable":false,"reusable_bytes":null,"growth_bytes_per_second":null,"projected_exhaustion_at":null,"baseline_at":null,"forecast_level":"ok","forecast_breaches":0,"forecast_confirmed":false,"level":"ok","stale":false,"capacity_unknown":false},"reasons":["parked_ingress_durability_unavailable"],"operator_action":"Follow docs/github-state-retention.md"}
+# Subtest: a CI class export archives only CI rows and cleanup deletes exactly those
+ok 55 - a CI class export archives only CI rows and cleanup deletes exactly those
+  ---
+  duration_ms: 7.440027
+  type: 'test'
+  ...
+# Subtest: sustained retention volume plateaus across windows with bounded rows, bytes and time
+ok 56 - sustained retention volume plateaus across windows with bounded rows, bytes and time
+  ---
+  duration_ms: 111.481576
+  type: 'test'
+  ...
+# Subtest: duplicate/stale retention checkpoints, dry runs and rowid reuse are safe
+ok 57 - duplicate/stale retention checkpoints, dry runs and rowid reuse are safe
+  ---
+  duration_ms: 2.329813
+  type: 'test'
+  ...
+# Subtest: retention policy survives restart, pins receipts while parked, and isolates failed checkpoints
+ok 58 - retention policy survives restart, pins receipts while parked, and isolates failed checkpoints
+  ---
+  duration_ms: 6.305737
+  type: 'test'
+  ...
+# Subtest: repair telemetry never writes authoritative SQL and its dimensions stay bounded
+ok 59 - repair telemetry never writes authoritative SQL and its dimensions stay bounded
+  ---
+  duration_ms: 35.420139
+  type: 'test'
+  ...
+# Subtest: capacity thresholds handle growth, shrinkage, unknown allowance and stale samples
+ok 60 - capacity thresholds handle growth, shrinkage, unknown allowance and stale samples
+  ---
+  duration_ms: 0.273416
+  type: 'test'
+  ...
+# Subtest: prepared health does no aggregate SQL or GitHub calls and survives monitoring persistence failure
+ok 61 - prepared health does no aggregate SQL or GitHub calls and survives monitoring persistence failure
+  ---
+  duration_ms: 5.982808
+  type: 'test'
+  ...
+# Subtest: R2 outage alarms remain available and a later monitoring attempt recovers
+ok 62 - R2 outage alarms remain available and a later monitoring attempt recovers
+  ---
+  duration_ms: 5.023045
+  type: 'test'
+  ...
+# Subtest: CI archival verifies bytes, preserves attempt guards, snapshots and cursors, and retries failed writes
+ok 63 - CI archival verifies bytes, preserves attempt guards, snapshots and cursors, and retries failed writes
+  ---
+  duration_ms: 3.695437
+  type: 'test'
+  ...
+# Subtest: verified recovery archives restore exact IDs, tombstones, memberships, coverage and spill contents
+ok 64 - verified recovery archives restore exact IDs, tombstones, memberships, coverage and spill contents
+  ---
+  duration_ms: 8.944517
+  type: 'test'
+  ...
+# Subtest: R2 prefix expiry preserves pinned inputs and retries after deletion/checkpoint failures
+ok 65 - R2 prefix expiry preserves pinned inputs and retries after deletion/checkpoint failures
+  ---
+  duration_ms: 0.510627
+  type: 'test'
+  ...
+# Subtest: malformed retention progress restarts safely without dropping persisted pins
+ok 66 - malformed retention progress restarts safely without dropping persisted pins
+  ---
+  duration_ms: 4.689141
+  type: 'test'
+  ...
+# Subtest: a single bounded sweep per interval keeps up with sustained append volume
+ok 67 - a single bounded sweep per interval keeps up with sustained append volume
+  ---
+  duration_ms: 125.752369
+  type: 'test'
+  ...
+# {"event":"repository_storage_failure","operation":"retention_load","reason":"internal","degraded":false,"message":"R2 unavailable"}
+# Subtest: a concurrent resource update wins over slow CI archival
+ok 68 - a concurrent resource update wins over slow CI archival
+  ---
+  duration_ms: 3.156008
+  type: 'test'
+  ...
+# Subtest: default policy retains the S0 fourteen-day receipt expiry
+ok 69 - default policy retains the S0 fourteen-day receipt expiry
+  ---
+  duration_ms: 4.852172
+  type: 'test'
+  ...
+# Subtest: tick re-arms before a slow monitoring job and expires from cached policy
+ok 70 - tick re-arms before a slow monitoring job and expires from cached policy
+  ---
+  duration_ms: 2.163928
+  type: 'test'
+  ...
+# Subtest: unknown durable pins fail closed while explicit emergency SQL cleanup remains available
+ok 71 - unknown durable pins fail closed while explicit emergency SQL cleanup remains available
+  ---
+  duration_ms: 4.718043
+  type: 'test'
+  ...
+# Subtest: retention inspection does not launch expiry or archival
+ok 72 - retention inspection does not launch expiry or archival
+  ---
+  duration_ms: 1.753429
+  type: 'test'
+  ...
+# Subtest: R2 expiry batches a full cursor page and reports oversize objects without starvation
+ok 73 - R2 expiry batches a full cursor page and reports oversize objects without starvation
+  ---
+  duration_ms: 1.679209
+  type: 'test'
+  ...
+# Subtest: checkpoints are coalesced and prepared diagnostics advance from tick maintenance
+ok 74 - checkpoints are coalesced and prepared diagnostics advance from tick maintenance
+  ---
+  duration_ms: 4.55464
+  type: 'test'
+  ...
+# Subtest: hourly size estimates never count a whole table and checkpoint their attempt first
+ok 75 - hourly size estimates never count a whole table and checkpoint their attempt first
+  ---
+  duration_ms: 4.732134
+  type: 'test'
+  ...
+# Subtest: expired staged spills retire, then traversal restarts without an empty-result substitution
+ok 76 - expired staged spills retire, then traversal restarts without an empty-result substitution
+  ---
+  duration_ms: 6.272667
+  type: 'test'
+  ...
+# Subtest: archived collection reads bound parallel R2 fetches and preserve membership order
+ok 77 - archived collection reads bound parallel R2 fetches and preserve membership order
+  ---
+  duration_ms: 5.286876
+  type: 'test'
+  ...
+# Subtest: installation accounting prepares retained hourly projections with a bounded scan and expires from its oldest prefix
+ok 78 - installation accounting prepares retained hourly projections with a bounded scan and expires from its oldest prefix
+  ---
+  duration_ms: 61.333868
+  type: 'test'
+  ...
+# Subtest: cold health does not wait indefinitely for the observation destination
+ok 79 - cold health does not wait indefinitely for the observation destination
+  ---
+  duration_ms: 105.942387
+  type: 'test'
+  ...
+# {"event":"installation_telemetry_failed","operation":"repository","reason":"internal"}
+# {"event":"repository_storage_failure","operation":"retention_checkpoint_load","reason":"internal","degraded":false,"message":"R2 get failed"}
+# Subtest: accounting instrumentation failure cannot fail an upstream semantic response
+ok 80 - accounting instrumentation failure cannot fail an upstream semantic response
+  ---
+  duration_ms: 11.589939
+  type: 'test'
+  ...
+# Subtest: health retains schema diagnostics when repository metadata is missing
+ok 81 - health retains schema diagnostics when repository metadata is missing
+  ---
+  duration_ms: 1.828381
+  type: 'test'
+  ...
+# Subtest: a delayed cold policy load cannot overwrite an acknowledged operator pin
+ok 82 - a delayed cold policy load cannot overwrite an acknowledged operator pin
+  ---
+  duration_ms: 2.031241
+  type: 'test'
+  ...
+# Subtest: a completed retention epoch waits for the next minute instead of rescanning on every alarm
+ok 83 - a completed retention epoch waits for the next minute instead of rescanning on every alarm
+  ---
+  duration_ms: 1.756484
+  type: 'test'
+  ...
+# Subtest: incremental accounting projections roll the hourly window without regrouping on health reads
+ok 84 - incremental accounting projections roll the hourly window without regrouping on health reads
+  ---
+  duration_ms: 27.083092
+  type: 'test'
+  ...
+# Subtest: a future completion timestamp cannot indefinitely suppress expiry
+ok 85 - a future completion timestamp cannot indefinitely suppress expiry
+  ---
+  duration_ms: 2.357033
+  type: 'test'
+  ...
+# Subtest: a retention pin acquired while listing prevents the pending R2 delete
+ok 86 - a retention pin acquired while listing prevents the pending R2 delete
+  ---
+  duration_ms: 0.191965
+  type: 'test'
+  ...
+# Subtest: checkpoint read failures preserve durable progress while cached-policy expiry still runs
+ok 87 - checkpoint read failures preserve durable progress while cached-policy expiry still runs
+  ---
+  duration_ms: 5.10689
+  type: 'test'
+  ...
+# Subtest: an acknowledged archive-policy change fences a pending pointer publication
+ok 88 - an acknowledged archive-policy change fences a pending pointer publication
+  ---
+  duration_ms: 3.530794
+  type: 'test'
+  ...
+# Subtest: compact roadmap snapshot updates on comment edit/delete without reading full histories
+ok 89 - compact roadmap snapshot updates on comment edit/delete without reading full histories
+  ---
+  duration_ms: 16.0705
+  type: 'test'
+  ...
+# Subtest: large inventory filters before statuses and serves compact facts in one page
+ok 90 - large inventory filters before statuses and serves compact facts in one page
+  ---
+  duration_ms: 77.438328
+  type: 'test'
+  ...
+# Subtest: migration is outside requests and one missing resource cannot block other PRs or maintenance
+ok 91 - migration is outside requests and one missing resource cannot block other PRs or maintenance
+  ---
+  duration_ms: 4.211142
+  type: 'test'
+  ...
+# Subtest: comment bursts coalesce projection rebuilds and malformed reply IDs do not block ingestion
+ok 92 - comment bursts coalesce projection rebuilds and malformed reply IDs do not block ingestion
+  ---
+  duration_ms: 5.660149
+  type: 'test'
+  ...
+# Subtest: partial PR payloads retain mergeability only for the same head and base
+ok 93 - partial PR payloads retain mergeability only for the same head and base
+  ---
+  duration_ms: 1.845435
+  type: 'test'
+  ...
+# Subtest: REST offset inventory gaps retain previously observed open PRs
+ok 94 - REST offset inventory gaps retain previously observed open PRs
+  ---
+  duration_ms: 4.3655
+  type: 'test'
+  ...
+# Subtest: a newer close cannot be re-added by an older inventory response
+ok 95 - a newer close cannot be re-added by an older inventory response
+  ---
+  duration_ms: 2.264396
+  type: 'test'
+  ...
+# Subtest: expired staging restarts from page one instead of retrying a missing page forever
+ok 96 - expired staging restarts from page one instead of retrying a missing page forever
+  ---
+  duration_ms: 13.166966
+  type: 'test'
+  ...
+# Subtest: one bad batched history does not turn a completed sibling into a retry
+ok 97 - one bad batched history does not turn a completed sibling into a retry
+  ---
+  duration_ms: 2.897024
+  type: 'test'
+  ...
+# Subtest: persistent parser errors keep their pagination and back off without rapid full scans
+ok 98 - persistent parser errors keep their pagination and back off without rapid full scans
+  ---
+  duration_ms: 2.065772
+  type: 'test'
+  ...
+# Subtest: daily archive checkpoints bounded pages and retains active R2 references
+ok 99 - daily archive checkpoints bounded pages and retains active R2 references
+  ---
+  duration_ms: 26.343977
+  type: 'test'
+  ...
+# Subtest: large old repair backlog cannot starve fresh deltas and still makes progress
+ok 100 - large old repair backlog cannot starve fresh deltas and still makes progress
+  ---
+  duration_ms: 193.218437
+  type: 'test'
+  ...
+# Subtest: demand advances quiet reconciliation without revoking actual quota deferrals
+ok 101 - demand advances quiet reconciliation without revoking actual quota deferrals
+  ---
+  duration_ms: 2.489089
+  type: 'test'
+  ...
+# Subtest: closed PR history and CI polling retire, then client demand reactivates them
+ok 102 - closed PR history and CI polling retire, then client demand reactivates them
+  ---
+  duration_ms: 2.288101
+  type: 'test'
+  ...
+# Subtest: a webhook arriving during a staged read keeps its repair pending
+ok 103 - a webhook arriving during a staged read keeps its repair pending
+  ---
+  duration_ms: 1.999283
+  type: 'test'
+  ...
+# Subtest: all four lanes get their configured share and leased work is excluded
+ok 104 - all four lanes get their configured share and leased work is excluded
+  ---
+  duration_ms: 2.818278
+  type: 'test'
+  ...
+# Subtest: late R2 encoding cannot overwrite a webhook and replaced leases cannot publish coverage
+ok 105 - late R2 encoding cannot overwrite a webhook and replaced leases cannot publish coverage
+  ---
+  duration_ms: 4.255147
+  type: 'test'
+  ...
+# Subtest: head-change webhooks refresh immutable file lists without resetting a quota cooldown
+ok 106 - head-change webhooks refresh immutable file lists without resetting a quota cooldown
+  ---
+  duration_ms: 2.819139
+  type: 'test'
+  ...
+# Subtest: REST exhaustion repairs a flat review history through its existing GraphQL thread dependency
+ok 107 - REST exhaustion repairs a flat review history through its existing GraphQL thread dependency
+  ---
+  duration_ms: 3.244339
+  type: 'test'
+  ...
+# Subtest: malformed upstream state retains coverage and backs off with a traceable request ID
+ok 108 - malformed upstream state retains coverage and backs off with a traceable request ID
+  ---
+  duration_ms: 1.759198
+  type: 'test'
+  ...
+# Subtest: whole-batch malformed responses retain the upstream trace and scheduler backoff
+ok 109 - whole-batch malformed responses retain the upstream trace and scheduler backoff
+  ---
+  duration_ms: 2.369362
+  type: 'test'
+  ...
+# Subtest: public health does not expose internal quota or secrets
+ok 110 - public health does not expose internal quota or secrets
+  ---
+  duration_ms: 206.819094
+  type: 'test'
+  ...
+# Subtest: webhook rejects bad signatures and conflicting duplicate bodies
+ok 111 - webhook rejects bad signatures and conflicting duplicate bodies
+  ---
+  duration_ms: 25.514637
+  type: 'test'
+  ...
+# Subtest: webhooks do not invent complete inventory; duplicate and old delivery are idempotent
+ok 112 - webhooks do not invent complete inventory; duplicate and old delivery are idempotent
+  ---
+  duration_ms: 56.73319
+  type: 'test'
+  ...
+# Subtest: resource tombstones advance journal without marking missing histories empty
+ok 113 - resource tombstones advance journal without marking missing histories empty
+  ---
+  duration_ms: 19.682264
+  type: 'test'
+  ...
+# Subtest: query validation, repo scoping, admin token independent
+ok 114 - query validation, repo scoping, admin token independent
+  ---
+  duration_ms: 6.815652
+  type: 'test'
+  ...
+# Subtest: reference reads require an explicitly enabled environment and admin authentication
+ok 115 - reference reads require an explicitly enabled environment and admin authentication
+  ---
+  duration_ms: 1.27521
+  type: 'test'
+  ...
+# Subtest: activity observations are authenticated, repository-scoped, bounded, and tolerate missing coverage
+ok 116 - activity observations are authenticated, repository-scoped, bounded, and tolerate missing coverage
+  ---
+  duration_ms: 5.980965
+  type: 'test'
+  ...
+# Subtest: CI records are not mirrored: webhooks are acknowledged unstored and queries fall back
+ok 117 - CI records are not mirrored: webhooks are acknowledged unstored and queries fall back
+  ---
+  duration_ms: 15.736855
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"b76fdd31-59ee-4aeb-bdc8-2f0ca8088073","operation":"repository","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f198bd4a-a19e-4737-8f55-c1543d7161a5","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"c8b9142f-a9b0-4ecb-8253-425085f9ca9d","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"2ba4674f-d153-4430-bfe0-3f9d389a9617","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"26b734c4-4f89-46ff-b0a3-6e80354fc776","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"5825a3a7-3f87-4ea0-a165-7558ba197888","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"7ead5381-0da3-4e9f-a459-82f1608e5b90","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"622c9967-daa4-4f7c-a98b-d4feb9f4d9f7","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"795cd032-c646-4d95-a621-667b2f94469b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b4dc8bc9-9f4d-4372-804d-9c2d5a25fa7b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"4fbee25c-248a-4b12-92c4-6a61ea9139c8","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"c5b2e17b-f5a7-4348-860e-9efa442c2db5","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"0d67115c-944b-4993-929f-be8882a38fe0","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"bb0ee7f7-832c-44f0-9a5b-32cf536b7090","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"9c568c94-1ee8-4f88-b454-837a2103482c","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"cc86e5e3-8169-4a30-85ad-c536e150b5e3","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"2abc59bb-fdc0-43c7-8b38-3603a35fc25f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e954d8ef-0556-4c44-bd32-af5db4bf7415","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"96a8c123-6745-4dde-b58f-bec278f25bbf","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"11552a50-8d41-4660-bbd4-a6e61c3f078d","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"08d60851-b873-42b5-acef-28f895e7008a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"c76326b1-950b-4808-85ec-9edecafd09a2","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"bb70a059-ae39-4120-bbc4-708fd0c0e822","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f921fe61-efe2-4adc-8ba4-a2eb252a87f1","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b01dc40f-a193-4de0-bc45-5ac685230eec","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"c3b1115f-c8d6-49a5-89ee-cfe590d63495","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"92db45c5-6d01-4b62-8a99-300f1cc2fbec","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"12710733-82e6-4a44-9ed1-c744075b0161","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"6a68ccb1-89f4-4f6e-858f-996089b696c6","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"ee000303-f90e-4555-a1d7-c1c7ee1e7f39","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"0a5c4673-7059-4fac-9b52-6604a19698eb","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e41c2584-44f2-4d65-951a-48a7a02d3605","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"ea1bd011-e7c8-4439-a373-cc136de48eaa","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"eae03cb5-2f67-44df-8d6e-2459bbf20cda","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"d3fc2cdc-6d50-4284-9961-1e93f5ec52eb","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e1d3a136-dade-4e65-bc38-48b3483b0687","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"28d56263-0a83-406f-8db7-57ceedca8c78","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a92b982f-d6e8-4df5-8c4f-f87556f57c4a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b994907b-4bd4-4c4f-9d06-e986062d38a8","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"61a52252-abc3-4a36-a2d0-f0b6bd129c6e","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"54990ad2-4308-4a67-9968-6bd104735d81","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"29f24eaf-e5a5-46db-8a3c-5bcf87b10744","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"fcde1768-d597-4f7b-92a6-f40ec90de209","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"5d409375-7497-4f15-83de-3a403f32b52e","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"99b1bf21-6379-40c4-ac45-78bebf4220fe","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"baa52815-b042-4559-914d-353a0cd0c7d2","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"14244117-d28f-4e24-a241-69bb3a6931e0","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b9c44cff-636f-4f7f-89a5-0786132fea18","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"fc7b7229-8371-476c-ba86-df37a7cd95d4","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"0333629c-f51a-427c-9769-ff11e010530a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b238d3d8-b6cd-441a-9a3a-5a57e232619d","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"53fdc64f-3852-4b58-b7fd-177f89cdd38f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f1da7968-2987-4d20-864a-3e7acafc5b10","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"63889619-7b16-4083-bb25-81ac1565c48e","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"353e4e56-1951-4757-b70d-a09b554cf3d4","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"61bdaa68-4e99-44d0-b43e-b5e2da2cf47d","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f2f92279-65da-4de8-8539-30c7878d3dc4","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"6963efa1-e0bb-4ac4-b136-74f6af042c22","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"3b610e40-8b9e-408a-89c0-f2fe518cfc2a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"6bad5284-e4ee-49ee-a026-bfc0920132ad","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"342da19a-d0d2-48ae-9b84-f70257ad1378","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"8beb9bd2-07d8-45e9-afb1-5e1f982101eb","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"529c6280-bf6f-4e25-9db8-1c9af4dc2476","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"fed6d3a8-a503-4144-8bf0-f3d9377eae6a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"db19ff91-cf53-4c5a-84ca-5bc7cd69b25a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"69467037-fd98-4f16-bb2f-3b7a2758b95c","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"59e6b4d2-90b8-45c3-b045-be9e7277eadb","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"5f73796c-bdeb-495e-8ef9-c6848c9fcef7","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a3e8e36e-281b-4a88-88fe-bf4147d36c76","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"dd7e3d90-eee6-4e39-9f40-a0d4aaa5f9d6","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"d4cb68ff-703f-4bf5-922a-690c8df6eb57","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a9b4bd11-9039-4dd8-b11c-ade10c112e3b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"3bcb7281-43f0-4b27-add5-20d910d71b63","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"289fbb80-200c-4773-849d-62a918d13a6f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a5bdb959-1a40-49c6-9603-c1e95600fcd7","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a4810de5-388d-4f91-ad86-a447a1f0cb72","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"022b39d6-d2d8-4df5-9caa-e969bcb3e71f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e4e2f758-6fee-4ae1-8085-8a0c6f46f7c6","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"750f20c2-d366-4f3a-be43-034458478cb3","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"9fbbba78-a218-4f99-8a87-17c5a5d8d003","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"9527ccc9-f15f-4f88-bd65-06851f8cb940","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"483f04d8-4274-4f23-bf53-2a76dccc8c2b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"9103e474-576d-4c66-a3de-b51f41749437","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"b9dc75cb-81e0-4b0f-928e-af2125ac30b8","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"ef8a329d-17bf-4c3f-819d-aa23abfa554b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"1af06538-b8ff-4199-9a22-dfb05d6bd606","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e8b8bcfd-2331-42ac-bdb9-aa163982de1f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"940edfd2-e25a-4810-b6b7-a73c6394d733","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f7e6a5b6-8eb0-4014-b1a7-c3bf5c4bc37c","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"fbf9f3e2-675c-4329-b3ba-f269d4a00c84","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f068488a-06d7-45e7-9a8e-836f07fc5220","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"ac04dd5e-14ad-46bb-abf0-ebcc35533d22","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"151f25f5-4c6c-48e9-907a-ef6a496e5556","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"6fb3858c-d675-49ce-9fca-a9290a2084a9","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"fb5b35b3-2cdd-4953-8c20-bd5f6d779a15","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"10105dca-1b30-43ab-94a5-4145088116e3","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"e1ebfb90-88e3-4573-9de2-1224d206fd99","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"53f5286a-39e4-4f32-81e4-3230ad004b8f","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"500d238d-96d2-4f96-a651-5367a072bd4a","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"58b753d8-97a5-45f9-b5b2-50778876ee44","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"7aaa48c3-f976-4fcc-9b78-8c80f3b0463b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"fixture":"large_inventory","prs":1200,"initial_inventory_requests":12,"concurrent_clients":10,"pages":3,"query_and_continuation_ms":160}
+# Subtest: large inventory snapshots paginate coherently and coalesce concurrent reads
+ok 118 - large inventory snapshots paginate coherently and coalesce concurrent reads
+  ---
+  duration_ms: 3030.520254
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"ffc5f873-1e0e-415e-813d-aca38b592544","operation":"repository","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"bac00973-f596-42df-a775-239892659b4b","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"a2328e9c-19d5-4320-bf6b-fc1029315efe","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"repository_storage_failure","operation":"repair_dispatch","reason":"storage_full","degraded":true,"message":"Exceeded the maximum database size. SQLITE_FULL (fault injection)"}
+# {"event":"event_parked","delivery":"full-1","repository":"org/repo","reason":"storage_full"}
+# {"event":"repository_storage_failure","operation":"probe","reason":"storage_full","degraded":true,"message":"Exceeded the maximum database size. SQLITE_FULL (fault injection)"}
+# {"event":"delivery_audit_skipped","repository":"org/repo","degraded":true,"status":200}
+# {"event":"repository_storage_failure","operation":"request:/event","reason":"storage_full","degraded":true,"message":"Exceeded the maximum database size; SQLITE_FULL recorded at 2026-10-20T05:27:56.222Z"}
+# {"event":"repository_request_failed","request_id":"1e1b4ebf-a50f-4d28-bd14-0cb497cc55b8","path":"/event","reason":"storage_full"}
+# {"event":"parked_replay_failed","repository":"org/repo","delivery":"full-1","error":"storage_full","request_id":"1e1b4ebf-a50f-4d28-bd14-0cb497cc55b8"}
+# Subtest: a full repository keeps serving stored reads, parks ingestion, recovers headroom, and spends no GitHub quota
+ok 119 - a full repository keeps serving stored reads, parks ingestion, recovers headroom, and spends no GitHub quota
+  ---
+  duration_ms: 2181.997773
+  type: 'test'
+  ...
+# {"event":"event_parked","delivery":"planned-1","repository":"org/repo","reason":"planned_migration"}
+# Subtest: planned migration parks every delivery without calling the repository object
+ok 120 - planned migration parks every delivery without calling the repository object
+  ---
+  duration_ms: 233.866535
+  type: 'test'
+  ...
+# Subtest: fault injection is unavailable unless the environment enables it
+ok 121 - fault injection is unavailable unless the environment enables it
+  ---
+  duration_ms: 188.786237
+  type: 'test'
+  ...
+# Subtest: Python fallback and TypeScript projection agree on 240 changing histories and scopes
+ok 122 - Python fallback and TypeScript projection agree on 240 changing histories and scopes
+  ---
+  duration_ms: 79.486023
+  type: 'test'
+  ...
+# Subtest: compact survey is authenticated, roadmap scoped and does not issue GitHub requests
+ok 123 - compact survey is authenticated, roadmap scoped and does not issue GitHub requests
+  ---
+  duration_ms: 252.351693
+  type: 'test'
+  ...
+# Subtest: head-bound blockers retain their authenticated actor and do not trust quoted markers
+ok 124 - head-bound blockers retain their authenticated actor and do not trust quoted markers
+  ---
+  duration_ms: 0.344581
+  type: 'test'
+  ...
+# Subtest: installation owns token, measures batch charge, preserves huge IDs
+ok 125 - installation owns token, measures batch charge, preserves huge IDs
+  ---
+  duration_ms: 251.840064
+  type: 'test'
+  ...
+# Subtest: hundred-node reaction batches isolate an unavailable alias
+ok 126 - hundred-node reaction batches isolate an unavailable alias
+  ---
+  duration_ms: 193.955128
+  type: 'test'
+  ...
+# Subtest: REST numeric identifiers retain their original digits
+ok 127 - REST numeric identifiers retain their original digits
+  ---
+  duration_ms: 192.989376
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:core","evidence":{"operation":"files","api":"core","status":403,"remaining":"0","reset":"1792474376","retry_after":null}}
+# Subtest: REST exhaustion swaps history to GraphQL and retains complete results
+ok 128 - REST exhaustion swaps history to GraphQL and retains complete results
+  ---
+  duration_ms: 210.6684
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:core","evidence":{"operation":"issue_comments","api":"core","status":403,"remaining":"0","reset":"1792474376","retry_after":null}}
+# Subtest: mid-pagination exhaustion restarts in the other pool without mixing cursors
+ok 129 - mid-pagination exhaustion restarts in the other pool without mixing cursors
+  ---
+  duration_ms: 189.69929
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:graphql","evidence":{"operation":"issue_comments","api":"graphql","status":200,"remaining":"0","reset":"1792474376","retry_after":null}}
+# Subtest: GraphQL HTTP-200 RATE_LIMITED defers its pool; 401 renews token once
+ok 130 - GraphQL HTTP-200 RATE_LIMITED defers its pool; 401 renews token once
+  ---
+  duration_ms: 189.874339
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:graphql","evidence":{"operation":"issue_comments","api":"graphql","status":200,"remaining":"0","reset":"1792474376","retry_after":null}}
+# Subtest: GraphQL HTTP-200 RATE_LIMIT defers its pool; 401 renews token once
+ok 131 - GraphQL HTTP-200 RATE_LIMIT defers its pool; 401 renews token once
+  ---
+  duration_ms: 188.220268
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"secondary:content","evidence":{"operation":"issue_comments","api":"graphql","status":429,"remaining":"100","reset":null,"retry_after":"120"}}
+# Subtest: secondary limit pauses both pools even with 100 primary points
+ok 132 - secondary limit pauses both pools even with 100 primary points
+  ---
+  duration_ms: 192.255349
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"secondary:content","evidence":{"operation":"issue_comments","api":"graphql","status":429,"remaining":"0","reset":null,"retry_after":"120"}}
+# Subtest: secondary limit pauses both pools even with 0 primary points
+ok 133 - secondary limit pauses both pools even with 0 primary points
+  ---
+  duration_ms: 192.979222
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:core","evidence":{"operation":"files","api":"core","status":403,"remaining":"0","reset":"1792474067","retry_after":null}}
+# Subtest: late primary rejection respects its original reset -10
+ok 134 - late primary rejection respects its original reset -10
+  ---
+  duration_ms: 191.784441
+  type: 'test'
+  ...
+# {"event":"new_quota_type","category":"primary:core","evidence":{"operation":"files","api":"core","status":403,"remaining":"0","reset":"1792474137","retry_after":null}}
+# Subtest: late primary rejection respects its original reset 60
+ok 135 - late primary rejection respects its original reset 60
+  ---
+  duration_ms: 199.794743
+  type: 'test'
+  ...
+# Subtest: delivery audit follows busy-repository pages and redelivers failures beyond page one
+ok 136 - delivery audit follows busy-repository pages and redelivers failures beyond page one
+  ---
+  duration_ms: 192.595072
+  type: 'test'
+  ...
+# {"event":"delivery_redelivery_rejected","id":"101","status":404,"at":1792474077892}
+# Subtest: one rejected redelivery cannot hide subsequent failed deliveries
+ok 137 - one rejected redelivery cannot hide subsequent failed deliveries
+  ---
+  duration_ms: 196.366112
+  type: 'test'
+  ...
+# {"event":"delivery_redelivery_rejected","id":"101","status":401,"at":1792474078091}
+# Subtest: redelivery auth errors are visible and deferred without hiding other gaps
+ok 138 - redelivery auth errors are visible and deferred without hiding other gaps
+  ---
+  duration_ms: 199.916183
+  type: 'test'
+  ...
+# Subtest: scalar GraphQL recipes declare only variables they use
+ok 139 - scalar GraphQL recipes declare only variables they use
+  ---
+  duration_ms: 191.893132
+  type: 'test'
+  ...
+# Subtest: REST commit statuses use the same state spelling as GraphQL
+ok 140 - REST commit statuses use the same state spelling as GraphQL
+  ---
+  duration_ms: 195.754465
+  type: 'test'
+  ...
+# Subtest: four requests overlap without blocking health; excess requests defer without spending
+ok 141 - four requests overlap without blocking health; excess requests defer without spending
+  ---
+  duration_ms: 200.368083
+  type: 'test'
+  ...
+# Subtest: concurrent reads reserve the last primary point only once
+ok 142 - concurrent reads reserve the last primary point only once
+  ---
+  duration_ms: 209.052576
+  type: 'test'
+  ...
+# Subtest: nested review histories checkpoint each page instead of monopolizing an installation turn
+ok 143 - nested review histories checkpoint each page instead of monopolizing an installation turn
+  ---
+  duration_ms: 201.191854
+  type: 'test'
+  ...
+# Subtest: admin reference reads bypass the mirror through the same quota owner and catalogue
+ok 144 - admin reference reads bypass the mirror through the same quota owner and catalogue
+  ---
+  duration_ms: 203.560365
+  type: 'test'
+  ...
+# Subtest: measurement batches use the owner and return costs without response bodies
+ok 145 - measurement batches use the owner and return costs without response bodies
+  ---
+  duration_ms: 121.223326
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"f91695eb-0609-4bef-8a0d-19c0968f1918","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# Subtest: batch routing preserves scarce GraphQL quota when REST can carry the whole group
+ok 146 - batch routing preserves scarce GraphQL quota when REST can carry the whole group
+  ---
+  duration_ms: 193.667131
+  type: 'test'
+  ...
+# Subtest: out-of-scope query fallback reveals no data and spends no installation quota
+ok 147 - out-of-scope query fallback reveals no data and spends no installation quota
+  ---
+  duration_ms: 115.638679
+  type: 'test'
+  ...
+# {"event":"installation_operation_failed","reason":"malformed_upstream_response","request_id":"malformed-drill"}
+# Subtest: malformed upstream JSON stays unavailable, preserves request ID, and retries through the same quota owner
+ok 148 - malformed upstream JSON stays unavailable, preserves request ID, and retries through the same quota owner
+  ---
+  duration_ms: 192.373934
+  type: 'test'
+  ...
+# {"event":"installation_operation_failed","reason":"malformed_upstream_response","request_id":"0726acf4-5e20-44b8-90bb-b248507e70d2"}
+# Subtest: malformed responses without quota headers debit the existing owner budget once
+ok 149 - malformed responses without quota headers debit the existing owner budget once
+  ---
+  duration_ms: 196.268337
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"shape-drill","operation":"statuses","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"shape-drill","operation":"pr","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"shape-drill","operation":"repository","api":"core","reason":"malformed_upstream_response"}
+# Subtest: malformed status/header objects stay unavailable rather than becoming empty complete state
+ok 150 - malformed status/header objects stay unavailable rather than becoming empty complete state
+  ---
+  duration_ms: 196.575142
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"62ded890-634b-4a9f-8b04-d9bc76e119aa","operation":"issue_comments","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"d22e3fe4-3642-41d5-8667-aff2dbf43031","operation":"workflow_jobs","api":"core","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"6b315e0b-ffa5-427d-bc32-277e8947b5bd","operation":"open_prs","api":"graphql","reason":"malformed_upstream_response"}
+# Subtest: malformed collection rows and pagination never publish an empty complete collection
+ok 151 - malformed collection rows and pagination never publish an empty complete collection
+  ---
+  duration_ms: 195.753875
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"statuses","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"issue_comments","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"issue_comments","api":"graphql","reason":"upstream_identity_unavailable"}
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"issue_comments","api":"graphql","reason":"upstream_identity_unavailable"}
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"reactions","api":"graphql","reason":"upstream_identity_unavailable"}
+# {"event":"upstream_response_unavailable","request_id":"batch-validation","operation":"review_threads","api":"graphql","reason":"malformed_upstream_response"}
+# Subtest: batch validation isolates malformed aliases without empty substitution or extra upstream requests
+ok 152 - batch validation isolates malformed aliases without empty substitution or extra upstream requests
+  ---
+  duration_ms: 197.171435
+  type: 'test'
+  ...
+# Subtest: label overflow restarts a pinned GraphQL traversal through the same quota owner
+ok 153 - label overflow restarts a pinned GraphQL traversal through the same quota owner
+  ---
+  duration_ms: 197.99743
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"a7609d65-5dea-47c5-a3a2-80947f547c7a","operation":"review_thread_overflow","api":"graphql","reason":"upstream_identity_unavailable"}
+# Subtest: malformed thread overflow cannot publish a partial complete history
+ok 154 - malformed thread overflow cannot publish a partial complete history
+  ---
+  duration_ms: 194.534557
+  type: 'test'
+  ...
+# {"event":"upstream_response_unavailable","request_id":"85c38f6f-11f9-46ac-aa2e-c001d003fd2a","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"9ee4270f-acd4-40cf-b6a0-9f6d932a31cd","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f9ca660d-367a-43a4-ad81-a122371af733","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f4162f2c-c34b-45a3-97b4-e5e5a8e44544","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"f300822f-23df-4bd3-b88e-c096a878aa81","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# {"event":"upstream_response_unavailable","request_id":"4f050a9c-8f52-4c0c-b584-6b3d726cabec","operation":"pr","api":"graphql","reason":"malformed_upstream_response"}
+# Subtest: malformed label connections stay unavailable and overflow waits for the REST quota reset
+ok 155 - malformed label connections stay unavailable and overflow waits for the REST quota reset
+  ---
+  duration_ms: 217.990493
+  type: 'test'
+  ...
+1..155
+# tests 155
+# suites 0
+# pass 155
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 6298.959779
