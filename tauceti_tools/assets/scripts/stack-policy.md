@@ -145,6 +145,11 @@ Normal build gates and the worker rule to wait for prerequisites still apply.
 
 ## Enforcement, races and retries
 
+The batching guarantees below require a caller using checkpoint mode and global
+wake coalescing. Legacy per-event callers still use focused checks and can
+exhaust GitHub's 100 waiting slots; upgrading the checker alone does not change
+workflow scheduling.
+
 Main-target source/base/draft events invoke trusted main policy. Other bases use
 an unprivileged wake followed by a main-defined observer. A focused invocation
 inspects its selected current PR against the full parent index. A checkpointed
@@ -216,7 +221,9 @@ bounded open-PR index needed by the detector. Every new or changed identity is
 selected, regardless of its timestamp, unless that exact identity is a retained
 unknown awaiting a new event or sweep. This avoids dropping a PR skipped during
 changing API pagination or delayed reads. Event targets are selected explicitly.
-New work alternates with unfinished work so both receive service. The comparison
+Event targets run first, followed by unfinished work in FIFO order, other changed
+identities, and sweep-only rechecks. Repeated sweeps do not reorder the unfinished
+tail. The comparison
 index includes other open PRs and bounded recent-closed parents. Checkpoints grant
 no closure authority; fresh checks before every mutation remain mandatory.
 
@@ -240,9 +247,10 @@ from this exact trusted main-defined workflow. Artifact publication commits
 progress; a failed publication leaves the old artifact authoritative. Discover
 artifacts directly because cancelled pending runs do not have useful state.
 Budget exhaustion is successful deferral only after the current invocation saved
-its own state and completed a child. Zero-progress and mutation-time budget
+its own state and successfully completed a child. Zero-progress and mutation-time budget
 failures remain red, as do unexpected execution and persistence failures.
-Dry-run and focused manual invocations must not publish apply-mode checkpoints;
+Dry-run and focused manual invocations must not restore or publish the automatic
+apply checkpoint artifact;
 `--pr` rejects combination with `--state-out` to protect one-PR canaries.
 
 Automatic wakes can then coalesce globally: one running batch and the newest

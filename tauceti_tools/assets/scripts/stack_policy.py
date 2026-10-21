@@ -10,7 +10,6 @@ import base64
 from collections import defaultdict
 from dataclasses import dataclass, asdict, field
 from datetime import datetime, timezone
-from itertools import zip_longest
 import hashlib
 import json
 import os
@@ -96,8 +95,13 @@ class API:
                 raw = response.read(min(8 * MAX_BYTES, 64 * MAX_BYTES - self.bytes,
                                         getattr(self, "child_bytes", 64 * MAX_BYTES) - self.bytes) + 1)
         except HTTPError as error:
+            headers = error.headers or {}
+            message = error.read(4096).decode(errors="replace").lower() if error.code == 403 else ""
             if error.code == 429 or (error.code == 403 and
-                    ((error.headers or {}).get("x-ratelimit-remaining") == "0" or (error.headers or {}).get("retry-after"))):
+                    (headers.get("x-ratelimit-remaining") == "0" or headers.get("retry-after")
+                     or any(word in message for word in
+                            ("rate limit", "abuse detection", "creating content too quickly",
+                             "was submitted too quickly")))):
                 raise BudgetGap("API rate limit refused; sweep stopped") from error
             raise
         self.bytes += len(raw)
@@ -798,7 +802,6 @@ class BatchProgress:
         self.policy = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
         self.mode = "apply" if apply else "dry-run"
         self.completed = 0
-        self.saved = False
         self.state = {"version": 1, "mode": self.mode, "policy": self.policy,
                       "watermark": None, "pending": [], "checked": {}, "failed": {}}
         self.recovery = "missing checkpoint"
@@ -839,13 +842,13 @@ class BatchProgress:
         # Compare identities directly: a skipped pagination entry or delayed API
         # read cannot make a never-checked PR fall behind a timestamp window.
         targets = (targets or set()) & opened
-        due = {n for n, identity in self.identities.items()
-               if sweep or n in targets or (identity != self.state["checked"].get(str(n))
-                   and identity != self.state["failed"].get(str(n)))}
-        fresh = sorted(due - set(pending))
-        # Alternate new work and unfinished work so neither can starve the other.
-        self.state["pending"] = [n for pair in zip_longest(fresh, pending)
-                                 for n in pair if n is not None]
+        changed = {n for n, identity in self.identities.items()
+                   if identity != self.state["checked"].get(str(n))
+                   and identity != self.state["failed"].get(str(n))}
+        # Sweep-only rechecks must not repeatedly displace the unfinished tail.
+        # An event target gets prompt inspection; all other carried work stays FIFO.
+        self.state["pending"] = list(dict.fromkeys(
+            sorted(targets) + pending + sorted(changed) + (sorted(opened) if sweep else [])))
         for name in ("checked", "failed"):
             self.state[name] = {n: v for n, v in self.state[name].items() if int(n) in opened}
         self.state["watermark"] = self.started
@@ -859,8 +862,10 @@ class BatchProgress:
             self.state["checked"][str(number)] = self.identities[number]
             self.state["failed"].pop(str(number), None)
         elif retry_soon:
+            self.state["checked"].pop(str(number), None)
             self.state["pending"].append(number)
         else:
+            self.state["checked"].pop(str(number), None)
             # Retain unknown coverage without spending every later batch on the
             # same expensive/ambiguous identity. Retry on change, event or sweep.
             self.state["failed"][str(number)] = self.identities[number]
@@ -871,7 +876,6 @@ class BatchProgress:
         temporary = path.with_suffix(path.suffix + ".tmp")
         temporary.write_text(json.dumps(self.state, sort_keys=True) + "\n")
         temporary.replace(path)
-        self.saved = True
 
 
 def main():
@@ -891,14 +895,7 @@ def main():
         raise Gap("--pr is a focused canary; do not combine with --prs or --state-out")
     if (args.state_in or args.sweep) and not args.state_out:
         raise Gap("--state-in and --sweep require --state-out")
-    args.progress = None
-    try:
-        return audit(args)
-    except BudgetGap as error:
-        if not args.progress or not args.progress.saved or not args.progress.completed:
-            raise
-        emit(deferred=True, gap=str(error), checkpoint=str(args.state_out))
-        return False
+    return audit(args)
 
 
 def audit(args):
@@ -910,7 +907,9 @@ def audit(args):
     prs = []
     metadata_gaps = set()
     incomplete_index = False
-    raw_prs = api.pages("pulls?state=open&sort=created&direction=asc", MAX_PRS)
+    # Mutable pagination can return a PR twice; inspect its last observed identity once.
+    raw_prs = list({raw["number"]: raw for raw in
+                    api.pages("pulls?state=open&sort=created&direction=asc", MAX_PRS)}.values())
     for raw in raw_prs:
         try:
             prs.append(PR.parse(raw))
@@ -934,7 +933,6 @@ def audit(args):
     if args.state_out:
         progress = BatchProgress(args.state_in, raw_prs, targets,
                                  args.sweep or targets is None, args.apply)
-        args.progress = progress
         for n in list(progress.state["pending"]):
             if n in metadata_gaps:
                 progress.finish(n, False)

@@ -38,10 +38,10 @@ class ProgressTests(unittest.TestCase):
         for n in [n % 8 + 1 for n in range(150)]:
             self.rows[n - 1]['head']['sha'] = f'{n + 100:040x}'
             self.rows[n - 1]['updated_at'] = b.started
-        self.assertEqual(b.state['pending'], list(range(1, 9)))
+        self.assertEqual(set(b.state['pending']), set(range(1, 9)))
         self.drain(b)
         b = self.batch([8])
-        self.assertEqual(b.state['pending'], list(range(1, 9)))
+        self.assertEqual(set(b.state['pending']), set(range(1, 9)))
         self.drain(b)
         self.assertEqual(self.batch().state['pending'], [])
 
@@ -108,6 +108,26 @@ class ProgressTests(unittest.TestCase):
         self.path.write_text(json.dumps(state))
         self.assertEqual(self.batch().state['pending'], list(range(1, 9)))
 
+
+    def test_repeated_small_sweeps_eventually_visit_entire_backlog(self):
+        seen = set()
+        for _ in range(8):
+            b = self.batch(sweep=True)
+            for n in b.state['pending'][:2]:
+                seen.add(n)
+                b.finish(n, True)
+            b.save(self.path)
+        self.assertEqual(seen, set(range(1, 9)))
+
+    def test_new_events_do_not_reorder_unfinished_tail(self):
+        b = self.batch(); b.finish(1, True); b.save(self.path)
+        for _ in range(8):
+            b = self.batch([1])
+            self.assertEqual(b.state['pending'][0], 1)
+            for n in b.state['pending'][:2]:
+                b.finish(n, True)
+            b.save(self.path)
+        self.assertEqual(self.batch().state['pending'], [])
 
 
 class BatchIntegration(fixtures.MainTests):
@@ -253,3 +273,42 @@ class BatchIntegration(fixtures.MainTests):
             with self.assertRaises(sp.BudgetGap):
                 self.batch()
         self.assertEqual(json.loads(self.state.read_text()), {'old': True})
+
+    def test_duplicate_page_entry_is_only_inspected_once(self):
+        self.raw.append(dict(self.raw[0]))
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.batch())
+        self.assertEqual(visited, [1, 2])
+
+    def test_explicit_sweep_flag_rechecks_unchanged_identities(self):
+        self.assertFalse(self.batch())
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.batch('--sweep'))
+        self.assertEqual(visited, [1, 2])
+
+
+class RateLimitTests(unittest.TestCase):
+    def test_headerless_secondary_limit_stops_instead_of_failing_each_child(self):
+        from urllib.error import HTTPError
+        for message in ('secondary rate limit', 'abuse detection', 'creating content too quickly'):
+            api = object.__new__(sp.API)
+            api.token, api.calls, api.bytes = 'fixture', 0, 0
+            api.deadline = sp.time.monotonic() + 1200
+            error = HTTPError('https://api.github.com', 403, 'Forbidden', {},
+                              io.BytesIO(json.dumps({'message': message}).encode()))
+            with patch.object(sp, 'urlopen', side_effect=error):
+                with self.assertRaises(sp.BudgetGap):
+                    api.request('https://api.github.com/repos/owner/repo/pulls')
+
+    def test_permission_denial_is_not_successful_quota_deferral(self):
+        from urllib.error import HTTPError
+        api = object.__new__(sp.API)
+        api.token, api.calls, api.bytes = 'fixture', 0, 0
+        api.deadline = sp.time.monotonic() + 1200
+        error = HTTPError('https://api.github.com', 403, 'Forbidden', {},
+                          io.BytesIO(b'{"message":"Resource not accessible by integration"}'))
+        with patch.object(sp, 'urlopen', side_effect=error):
+            with self.assertRaises(HTTPError):
+                api.request('https://api.github.com/repos/owner/repo/pulls')
