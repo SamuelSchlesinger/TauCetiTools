@@ -629,6 +629,19 @@ enrollment request. These are not secrets. Keep the raw token on the downstream 
 the operator does not need it. The operator cannot open another account's installation
 settings. Use that account's installation, rather than the operator's original installation.
 
+Alternatively, Tools can generate the same private token and prepare the enrollment
+request in local files. From the downstream checkout, replace `INSTALLATION_ID` with
+the number above:
+
+```sh
+tauceti-tools github-state request --installation INSTALLATION_ID
+```
+
+This reuses an existing token, writes `client-grant.json` and `access-request.md` beside
+it, and prints a `gh issue create --body-file ...` command. Review the saved request
+before submitting it. The request contains only the hash, repository scope, installation
+ID and public configuration URL. It does not post an issue or change the service.
+
 After approving the request, the operator obtains the repository ID:
 
 ```sh
@@ -669,6 +682,18 @@ Otherwise recover the complete array from the operator's private backup before e
 Replacing it with just the new grant revokes other clients. Keep the updated array in the
 private file for subsequent enrollments.
 
+The equivalent local-file helper, for a service with only its original client, is:
+
+```sh
+tauceti-tools github-state initial-grants
+```
+
+It reads `~/.config/tauceti-github-state/client-token` and writes a new private
+`~/.config/tauceti-github-state/client-tokens.json`, refusing to overwrite an existing file.
+Use `--token-file`, `--repository` and `--output` if the original client's token, repository
+(default `TauCetiProject/TauCeti`) or retained-array path differs. Append the downstream
+grant to the complete array before uploading it; this command does not upload anything.
+
 For later code updates run `npx wrangler deploy` from the service checkout. Its `keep_vars`
 setting preserves dashboard variables, and secrets persist. Do not rerun
 `scripts/setup.py deploy` after enrolling downstreams: that initial-deployment helper
@@ -695,6 +720,18 @@ with urllib.request.urlopen(request, timeout=30) as response:
     print("Bootstrap HTTP", response.status)
 PY
 ```
+
+The equivalent operator command is:
+
+```sh
+tauceti-tools github-state bootstrap --conf https://raw.githubusercontent.com/ExampleOrg/ExampleCeti/main/tauceti.toml
+```
+
+It reads the same private admin token. Its destination defaults to the operator's
+`https://github-state.taucetiproject.org` service, independently of the downstream
+configuration; redirects are refused. For another service the operator supplies
+`--url https://THE_OPERATOR_SERVICE`. Use `--admin-token-file PATH` if that credential
+is stored elsewhere.
 
 The expected response is HTTP 200. Initialization continues in the background; authenticated
 `GET /v1/health?repository=ExampleOrg%2FExampleCeti` must eventually show that repository,
@@ -776,7 +813,8 @@ For example, save `~/.config/tauceti/neon-projects.json` with mode 0600:
 
 In the Neon console select the operator organization, open **Settings → API keys**, create
 an organization API key for this administration, and save it privately as
-`~/.config/tauceti/neon-api-key`. The following command previews the resource settings; it
+`~/.config/tauceti/neon-api-key`. Copy `org_id` from **Settings → General information**
+([Neon organization instructions](https://neon.com/docs/manage/orgs-api)). The following command previews the resource settings; it
 creates nothing:
 
 ```sh
