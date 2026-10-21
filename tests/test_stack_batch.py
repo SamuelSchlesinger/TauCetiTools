@@ -1,0 +1,161 @@
+"""Checkpoint coverage and real checker integration, without network or policy writes."""
+import copy
+import io
+import json
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
+
+SCRIPTS = Path(__file__).resolve().parents[1] / 'tauceti_tools/assets/scripts'
+sys.path.insert(0, str(SCRIPTS))
+import stack_policy as sp
+import test_stack_policy as fixtures
+
+
+class ProgressTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.path = Path(self.tmp.name) / 'state.json'
+        self.rows = [dict(number=n, head={'sha': f'{n:040x}'}, base={'ref': 'main'},
+                          updated_at='2026-10-21T20:00:00Z') for n in range(1, 9)]
+        self.quiet = redirect_stdout(io.StringIO())
+        self.quiet.__enter__()
+        self.addCleanup(self.quiet.__exit__, None, None, None)
+
+    def batch(self, targets=(), sweep=False):
+        return sp.BatchProgress(self.path, self.rows, set(targets), sweep)
+
+    def drain(self, b):
+        for n in list(b.state['pending']):
+            b.finish(n, True)
+        b.save(self.path)
+
+    def test_more_than_100_replaced_wakes_cover_all_latest_prs_once(self):
+        b = self.batch([8])  # 150 replaced events are recoverable from current metadata.
+        for n in [n % 8 + 1 for n in range(150)]:
+            self.rows[n - 1]['head']['sha'] = f'{n + 100:040x}'
+            self.rows[n - 1]['updated_at'] = b.started
+        self.assertEqual(b.state['pending'], list(range(1, 9)))
+        self.drain(b)
+        b = self.batch([8])
+        self.assertEqual(b.state['pending'], list(range(1, 9)))
+        self.drain(b)
+        self.assertEqual(self.batch().state['pending'], [])
+
+    def test_update_during_batch_and_same_second_update_are_covered(self):
+        b = self.batch()
+        self.rows[0]['updated_at'] = b.started
+        self.rows[0]['head']['sha'] = 'f' * 40
+        self.drain(b)
+        self.assertEqual(self.batch().state['pending'], [1])
+
+    def test_budget_and_failed_children_rotate_behind_unvisited_work(self):
+        b = self.batch()
+        b.finish(1, False)
+        b.finish(2, True)
+        b.save(self.path)
+        self.assertEqual(self.batch().state['pending'], [3, 4, 5, 6, 7, 8, 1])
+
+    def test_unpublished_checkpoint_repeats_work_instead_of_losing_it(self):
+        b = self.batch(); b.save(self.path)
+        b.finish(1, True)  # Failed upload leaves the previous artifact authoritative.
+        self.assertIn(1, self.batch().state['pending'])
+
+    def test_invalid_missing_and_expired_state_recover_all_current_prs(self):
+        for data in (None, '', '{}', '{"version":99}', '{"version":1,"pending":"bad"}'):
+            if data is None:
+                self.path.unlink(missing_ok=True)
+            else:
+                self.path.write_text(data)
+            self.assertEqual(self.batch().state['pending'], list(range(1, 9)))
+
+    def test_closed_targets_retired_and_sweep_rechecks_old_unchanged_prs(self):
+        self.drain(self.batch())
+        self.rows.pop()
+        self.assertEqual(self.batch([8]).state['pending'], [])
+        self.assertEqual(self.batch(sweep=True).state['pending'], list(range(1, 8)))
+
+    def test_previously_deferred_prs_survive_advancing_discovery_boundary(self):
+        b = self.batch(); b.finish(1, True); b.save(self.path)
+        self.rows.append(dict(number=9, head={'sha': 'a' * 40}, base={'ref': 'parent'},
+                              updated_at=b.started))
+        self.assertEqual(self.batch([9]).state['pending'], [2, 3, 4, 5, 6, 7, 8, 9])
+
+
+class BatchIntegration(fixtures.MainTests):
+    def setUp(self):
+        super().setUp()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.state = Path(self.tmp.name) / 'state.json'
+        self.api.deadline = sp.time.monotonic() + 1200
+        for r in self.raw:
+            r['updated_at'] = '2026-10-21T20:00:00Z'
+
+    def main(self, *args):
+        # Existing focused tests stay on the legacy interface during rollout.
+        return super().main(*args)
+
+    def batch(self, *args):
+        return self.main('--state-in', str(self.state), '--state-out', str(self.state), *args)
+
+    def test_batch_shared_preparation_and_full_parent_index(self):
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.batch())
+        self.assertEqual(visited, [1, 2])
+        self.last_source.fetch.assert_called_once()
+        self.assertEqual({p.number for p in self.last_constructor.call_args.args[2]}, {1, 2})
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [])
+
+    def test_budget_saves_unvisited_then_failed_child_and_recovers(self):
+        def fail(p):
+            raise sp.BudgetGap('quota exhausted')
+        self.detector.detect = fail
+        self.assertFalse(self.batch())
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [2, 1])
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.batch())
+        self.assertEqual(visited, [2, 1])
+
+    def test_preparation_budget_preserves_discovered_work(self):
+        original = self.api.call
+        def stop(path, *args, **kwargs):
+            if path.startswith('pulls?state=closed'):
+                raise sp.BudgetGap('preparation limit')
+            return original(path, *args, **kwargs)
+        with patch.object(self.api, 'call', side_effect=stop):
+            self.assertFalse(self.batch())
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [1, 2])
+
+    def test_per_pr_gap_does_not_starve_unrelated_child(self):
+        def detect(p):
+            if p.number == 1:
+                raise sp.ChildGap('expensive child')
+            return None, []
+        self.detector.detect = detect
+        self.assertFalse(self.batch())
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [1])
+
+    def test_multiple_explicit_prs_reuse_one_preparation(self):
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.main('--prs', '1', '2'))
+        self.assertEqual(visited, [2, 1])
+        self.last_source.fetch.assert_called_once()
+
+    def test_stale_fork_wake_still_discovers_current_changes(self):
+        self.assertFalse(self.event({'workflow_run': {'head_sha': 'f' * 40,
+            'head_branch': 'gone', 'head_repository': {'full_name': 'fork/TauCeti'}}},
+            '--state-in', str(self.state), '--state-out', str(self.state)))
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [])
+
+    def test_dry_batch_never_writes_policy(self):
+        self.detector.detect = lambda p: (self.evidence if p.number == 2 else None, [])
+        self.assertFalse(self.batch())
+        self.assertEqual(self.api.calls, [])

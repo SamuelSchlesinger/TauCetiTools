@@ -914,7 +914,8 @@ class MainTests(unittest.TestCase):
     def main(self, *args):
         empty_bors = {"schema": "tauceti-bors.observation/v1", "repo": sp.REPO, "base": "main",
                       "batch_ids": [], "batches": [], "held": []}
-        source = SimpleNamespace(fetch=MagicMock(), begin_child=lambda: None, calls=0, started=sp.time.monotonic())
+        source = SimpleNamespace(fetch=MagicMock(), begin_child=lambda: None, calls=0, started=sp.time.monotonic(),
+                                 deadline=sp.time.monotonic() + 1200)
         self.last_source = source
         with patch.object(sp, "API", return_value=self.api), patch.object(sp, "Source", return_value=source), \
                 patch.object(sp, "Detector", return_value=self.detector) as constructor, \

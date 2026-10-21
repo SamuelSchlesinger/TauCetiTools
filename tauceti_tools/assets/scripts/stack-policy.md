@@ -198,3 +198,50 @@ read-only audit; omit the number for backlog. `--apply` requires `STACK_ACTOR` t
 authenticate policy comments. Deployments need a NEW main-defined dispatch using
 the reviewed source; a changed closing path needs actual detection, explanation,
 closure, preserved branch and observed admitted-child withdrawal verification.
+
+
+## Batched observation and continuation
+
+`--state-in state.json --state-out next.json` enables incremental batches.
+`--prs N ...` selects multiple explicit targets without requiring separate
+source preparation. Without checkpoint arguments, the focused/backlog interface
+continues to support the deployed caller during rollout.
+
+Checkpoint version 1 contains a UTC `watermark`, ordered `pending` PR numbers,
+and `checked` identities (head SHA, observed updated time and base ref). Each
+batch enumerates the same complete bounded open-PR index needed by the detector,
+selects updates since the watermark with a two-minute overlap, adds current
+event targets, and resumes unfinished work first. The comparison index still
+includes other open PRs and the bounded recent-closed parents. A matching checked
+identity suppresses repeated overlap work; no checkpoint grants closure authority.
+Fresh checks immediately before mutations remain mandatory.
+
+Missing, invalid or expired state recovers by selecting every current open PR.
+An explicit `--sweep` also adds all current PRs, retaining unfinished work at the
+front. Closed targets disappear only after the complete open index is obtained.
+The boundary advances to the batch start only with all discovered work recorded
+as pending. Failed children rotate behind unvisited work, including on global
+budget exhaustion; no retry count drops them. Already completed children are
+saved after each inspection. A retry can repeat work if a runner dies before
+publication, but cannot rely on an unpublished boundary to skip work.
+
+The trusted workflow must publish the output checkpoint even on failure, then
+restore the latest published artifact from this exact main-defined workflow.
+Artifact publication commits progress; if it fails the old artifact remains the
+boundary. Do not use a cancelled-run listing as the checkpoint index. Budget
+exhaustion after saving discovered work is expected deferral, reported with a
+pending count rather than a policy failure. A budget failure during a mutation
+remains a failed run. Unexpected failures and persistence errors remain visible.
+Dry-run/manual focused invocations must not publish apply-mode checkpoints.
+
+Automatic wakes can then coalesce globally: one running batch and the newest
+waiting wake cover all metadata updates, including notifications replaced before
+taking a runner. Keep manual and scheduled requests outside automatic replacement
+and all policy mutations under the same global lock. Full recovery sweeps share
+this checkpoint so continuation does not restart at the first PR. No extra merge
+gate or fixed debounce is needed.
+
+For local regression tests run `python3 -m unittest discover -s tests -p
+ test_stack_batch.py` in TauCetiTools. Coverage includes collapsed notifications,
+latest identities, interruption and publication failure, shared source setup,
+fair continuation, stale fork wakes and read-only execution.
