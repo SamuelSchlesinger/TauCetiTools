@@ -40,6 +40,8 @@ root_module = "empty"
 [roadmap]
 active_dir = "{root}Roadmap"
 completed_dir = "Completed"
+# Optional WIP roadmap authoring uses its own configuration, not this tauceti.toml.
+# authoring_conf_url = "https://raw.githubusercontent.com/{org}/{name}RoadmapJobs/main/tauceti-roadmap.toml"
 
 # Select full commit SHAs before installing the core workflows.
 # Discover a version with: gh api repos/TauCetiProject/TauCetiTools/commits/main --jq .sha
@@ -78,6 +80,7 @@ progress = false
 zulip = false
 fleet = false
 security_audit = false
+roadmap_authoring = false # WIP: TauCetiRoadmapWorker and a downstream-owned job board
 
 [services.github_state]
 mode = "off" # off | hosted | custom
