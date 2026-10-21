@@ -235,7 +235,10 @@ work rather than restarting at the first child. Closed targets are retired after
 the complete open index is obtained; if one temporarily disappears during paging,
 its unrecorded identity is rediscovered when it next appears.
 
-Unvisited work, transient network/server failures and identity races remain `pending`. Source/metadata gaps and child
+Unvisited work, transient fetch/network/server failures and identity races remain
+`pending`. Identity races and a child interrupted after successful progress stay
+at the front for a fresh snapshot; zero-progress budget failures rotate to the
+tail so the next batch can try unrelated work. Source/metadata gaps and child
 cost limits are retained in `failed`, retried on identity change, a new explicit
 event, or a sweep. No retry count drops coverage. This prevents one permanently
 ambiguous or expensive child occupying every batch. Finished inspections are

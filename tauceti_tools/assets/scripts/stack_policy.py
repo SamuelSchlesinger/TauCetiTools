@@ -286,6 +286,7 @@ class Source:
             (self.root / "objects/info/alternates").write_text(str(Path(alternates).resolve()) + "\n")
         self.git("remote", "add", "origin", remote or f"https://github.com/{REPO}.git")
         self.commits_cache = {}
+        self.failed_fetches = set()
         self.first_parent_cache = {}
         self.historical_commits_cache = {}
         self.patch_cache = {}
@@ -336,6 +337,7 @@ class Source:
                         raise
                     except (Gap, subprocess.TimeoutExpired):
                         self.commits_cache[p.head] = None
+                        self.failed_fetches.add(p.number)
         shallow = self.root / "shallow"
         if shallow.exists():
             # The trusted checkout supplies complete main history. Depth-limited
@@ -855,7 +857,7 @@ class BatchProgress:
         emit(batch=True, recovery=self.recovery, covered_through=self.started,
              pending=len(self.state["pending"]))
 
-    def finish(self, number, success, retry_soon=False):
+    def finish(self, number, success, retry_soon=False, first=False):
         self.state["pending"].remove(number)
         if success:
             self.completed += 1
@@ -863,7 +865,10 @@ class BatchProgress:
             self.state["failed"].pop(str(number), None)
         elif retry_soon:
             self.state["checked"].pop(str(number), None)
-            self.state["pending"].append(number)
+            if first:
+                self.state["pending"].insert(0, number)
+            else:
+                self.state["pending"].append(number)
         else:
             self.state["checked"].pop(str(number), None)
             # Retain unknown coverage without spending every later batch on the
@@ -944,7 +949,8 @@ def audit(args):
             raise Gap("requested/event PR metadata unavailable in the bounded index")
         if progress:
             emit(batch_summary=True, covered_through=progress.state["watermark"],
-                 pending=len(progress.state["pending"]), metadata_gaps=sorted(metadata_gaps))
+                 pending=len(progress.state["pending"]), metadata_gaps=sorted(metadata_gaps),
+                 retry_on_change_or_sweep=len(progress.state["failed"]))
         else:
             emit(classification="superseded", reason="target absent from complete open index", selected=0)
         return False
@@ -992,6 +998,7 @@ def audit(args):
             mutation_started = False
             success = False
             retry_soon = False
+            retry_first = False
             try:
                 api.begin_child()
                 source.begin_child()
@@ -1042,20 +1049,22 @@ def audit(args):
                 if not progress:
                     raise
                 failures += int(mutation_started or not progress.completed)
-                progress.finish(child.number, False, retry_soon=True)
+                progress.finish(child.number, False, retry_soon=True, first=progress.completed > 0)
                 progress.save(args.state_out)
                 emit(pr=child.number, deferred=True, gap=str(error))
                 break
             except Exception as e:
                 unknowns += 1
-                retry_soon = (isinstance(e, RaceGap)
+                retry_first = isinstance(e, RaceGap)
+                retry_soon = (retry_first
+                              or child.number in source.failed_fetches
                               or (isinstance(e, HTTPError) and e.code >= 500)
                               or (isinstance(e, (URLError, TimeoutError, subprocess.TimeoutExpired))
                                   and not isinstance(e, HTTPError)))
                 failures += int(mutation_started)
                 emit(pr=child.number, head=child.head, main=main_sha, classification="unknown", gap=str(e))
             if progress:
-                progress.finish(child.number, success, retry_soon)
+                progress.finish(child.number, success, retry_soon, retry_first)
                 progress.save(args.state_out)
         if progress:
             emit(batch_summary=True, covered_through=progress.state["watermark"],

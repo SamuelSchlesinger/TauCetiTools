@@ -251,7 +251,7 @@ class BatchIntegration(fixtures.MainTests):
         self.detector.detect = lambda p: (_ for _ in ()).throw(sp.RaceGap('main advanced'))
         self.assertFalse(self.batch())
         state = json.loads(self.state.read_text())
-        self.assertEqual(state['pending'], [1, 2])
+        self.assertEqual(set(state['pending']), {1, 2})
         self.assertEqual(state['failed'], {})
 
     def test_single_pr_canary_rejects_batch_scope(self):
@@ -287,6 +287,29 @@ class BatchIntegration(fixtures.MainTests):
         self.detector.detect = lambda p: (visited.append(p.number) or None, [])
         self.assertFalse(self.batch('--sweep'))
         self.assertEqual(visited, [1, 2])
+
+    def test_interrupted_child_stays_ahead_of_unvisited_tail_after_progress(self):
+        extra = dict(self.raw[1], number=3)
+        self.raw.append(extra)
+        def detect(p):
+            if p.number == 2:
+                raise sp.BudgetGap('quota')
+            return None, []
+        self.detector.detect = detect
+        self.assertFalse(self.batch())
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [2, 3])
+
+    def test_failed_child_fetch_remains_pending(self):
+        self.fetch_failures = {1}
+        def detect(p):
+            if p.number == 1:
+                raise sp.Gap('head changed while fetching')
+            return None, []
+        self.detector.detect = detect
+        self.assertFalse(self.batch())
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state['pending'], [1])
+        self.assertEqual(state['failed'], {})
 
 
 class RateLimitTests(unittest.TestCase):
