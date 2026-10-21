@@ -1,0 +1,261 @@
+{
+  "version": 1,
+  "scope": "SQLite publication-fixture process memory and separate native recent_prs collection/job status observations",
+  "issue": "TauCetiProject/TauCetiWorker#316",
+  "historical_ci_fixture": {
+    "reported": {
+      "at": "2026-10-20T19:53:07.765Z",
+      "fixture": {
+        "staged_pages": 111,
+        "decoded_rows": 11100,
+        "published_rows": 11015,
+        "dependent_jobs": 44060,
+        "body_characters": 3900,
+        "r2_fixture": "disk backed; no in-process retained archive text"
+      },
+      "node_old_space_limit_mib": 96,
+      "samples": [
+        {
+          "stage": "publication_rows",
+          "heap_used": 78255336
+        },
+        {
+          "stage": "publication_repairs",
+          "heap_used": 140267192
+        },
+        {
+          "stage": "publication_applied",
+          "heap_used": 70467792
+        }
+      ],
+      "github_calls": 0,
+      "complete": true
+    },
+    "annotations": {
+      "code_commit": "2af88e1de3427c2d4d133e136c780fc50041b8a8",
+      "ci_run": "https://github.com/TauCetiProject/TauCetiTools/actions/runs/39487156998",
+      "command": "npm run test:publication-memory",
+      "backend": "sqlite (node:sqlite in-memory)",
+      "forced_gc": false,
+      "declared_fields": [
+        "fixture.staged_pages",
+        "fixture.decoded_rows",
+        "fixture.published_rows",
+        "fixture.dependent_jobs",
+        "fixture.body_characters",
+        "fixture.r2_fixture",
+        "node_old_space_limit_mib"
+      ],
+      "asserted_fields": [
+        "fixture.published_rows",
+        "fixture.dependent_jobs",
+        "github_calls"
+      ],
+      "staged_pages_semantics": "110 archived pages plus the final page supplied directly to refresh; declared input dimensions in the historical producer",
+      "reported_json_sha256": "8d7a237cb0659ee6442f1a7d0cd162897549a089401ac97bebbd175b8e81d0e7",
+      "max_sampled_node_heap_used_bytes": 140267192,
+      "measurement_scope": "Historical process heapUsed samples; baseline, RSS and runtime metadata were not recorded. Node process samples do not measure Worker-isolate usage."
+    }
+  },
+  "instrumented_local_fixtures": [
+    {
+      "reported": {
+        "at": "2026-10-21T01:00:11.897Z",
+        "backend": "sqlite (node:sqlite in-memory)",
+        "code_commit": "9fba3f67eb7a5b557b274958ec02a7f1014012d7",
+        "code_commit_source": "git_head",
+        "github_sha": null,
+        "github_sha_matches_head": null,
+        "github_event_name": null,
+        "working_tree_dirty": false,
+        "node_version": "v24.20.0",
+        "v8_version": "13.6.233.17-node.53",
+        "fixture": {
+          "input_pages": 111,
+          "archived_pages": 110,
+          "input_rows": 11100,
+          "published_rows": 11015,
+          "dependent_jobs": 44060,
+          "body_characters": 3900,
+          "r2_fixture": "disk backed; no in-process retained archive text"
+        },
+        "node_old_space_limit_mib": 96,
+        "heap_size_flags": [
+          "--max-old-space-size=96"
+        ],
+        "forced_gc": false,
+        "samples": [
+          {
+            "stage": "before_refresh",
+            "heap_used": 40706624,
+            "rss": 170258432,
+            "external": 37269251,
+            "array_buffers": 10552580,
+            "total_heap_size": 74571776,
+            "heap_size_limit": 301989888
+          },
+          {
+            "stage": "publication_rows",
+            "rows": 11100,
+            "heap_used": 77856832,
+            "rss": 222543872,
+            "external": 27687601,
+            "array_buffers": 975496,
+            "total_heap_size": 210378752,
+            "heap_size_limit": 301989888
+          },
+          {
+            "stage": "publication_repairs",
+            "repairs": 44060,
+            "heap_used": 135762672,
+            "rss": 528261120,
+            "external": 33566489,
+            "array_buffers": 975496,
+            "total_heap_size": 213499904,
+            "heap_size_limit": 301989888
+          },
+          {
+            "stage": "publication_applied",
+            "heap_used": 65713400,
+            "rss": 534999040,
+            "external": 27687601,
+            "array_buffers": 975496,
+            "total_heap_size": 174157824,
+            "heap_size_limit": 301989888
+          },
+          {
+            "stage": "after_refresh",
+            "heap_used": 65737232,
+            "rss": 534999040,
+            "external": 27687601,
+            "array_buffers": 975496,
+            "total_heap_size": 174157824,
+            "heap_size_limit": 301989888
+          }
+        ],
+        "github_calls": 0,
+        "complete": true
+      },
+      "annotations": {
+        "command": "npm run test:publication-memory",
+        "max_sampled_node_heap_used_bytes": 135762672,
+        "working_tree_check": "Tracked and non-ignored untracked changes",
+        "measurement_scope": "Process memory includes the in-memory SQLite database and startup allocations; snapshots are not a live-set, continuous peak, PostgreSQL cache-group or Worker-isolate measurement"
+      }
+    }
+  ],
+  "native": {
+    "environment": "test",
+    "repository": "1256881326",
+    "backend": "sqlite",
+    "measurement_scope": "Recorded native collection/job status only; neither inventory size, a full publication, nor isolate memory usage was measured",
+    "observations": [
+      {
+        "observed_at": "2026-10-20T15:27:25.170Z",
+        "verified_at": "2026-10-20T15:26:45.535Z",
+        "operation": "recent_prs",
+        "collection_count": 1,
+        "complete_collection_count": 1,
+        "job_count": 1,
+        "job_attempts": 0,
+        "publication_path": "not captured; full publication and unchanged-response verification are both possible",
+        "normal_existing_reconciler": null,
+        "operator_forced_due_or_attempt_reset": null,
+        "provenance": "recorded operator observation; null means not recorded",
+        "code_commit": "89dc427f0b920d67933e05b1f3f5fd430a054f6c",
+        "deployment": "19a2d235-1d45-4d3b-8737-0ed43dafb241"
+      },
+      {
+        "observed_at": "2026-10-20T17:38:07.346Z",
+        "verified_at": "2026-10-20T16:35:58.499Z",
+        "operation": "recent_prs",
+        "collection_count": 1,
+        "complete_collection_count": 1,
+        "job_count": 1,
+        "job_attempts": 0,
+        "publication_path": "not captured; full publication and unchanged-response verification are both possible",
+        "normal_existing_reconciler": true,
+        "operator_forced_due_or_attempt_reset": false,
+        "provenance": "recorded operator observation; null means not recorded",
+        "code_commit": "89dc427f0b920d67933e05b1f3f5fd430a054f6c",
+        "deployment": "19a2d235-1d45-4d3b-8737-0ed43dafb241"
+      }
+    ]
+  },
+  "selected_source_file_comparisons": [
+    {
+      "from_commit": "89dc427f0b920d67933e05b1f3f5fd430a054f6c",
+      "to_commit": "2af88e1de3427c2d4d133e136c780fc50041b8a8",
+      "selected_paths": [
+        "services/github-state/src/repository.ts",
+        "services/github-state/src/repository_store.ts"
+      ],
+      "changed_selected_paths": [],
+      "all_changed_paths": [
+        "docs/github-state-migration.md",
+        "services/github-state/scripts/benchmark-migration-bytes.mjs",
+        "services/github-state/scripts/migrate.py",
+        "services/github-state/src/migration.ts",
+        "services/github-state/src/migration_target.ts",
+        "services/github-state/tests/migration.test.mjs",
+        "services/github-state/tests/migration_fixture.mjs",
+        "services/github-state/tests/migration_postgres.test.mjs",
+        "services/github-state/tests/worker_postgres.mjs",
+        "services/github-state/tests/worker_postgres.test.mjs",
+        "services/github-state/validation/migration-byte-sizing-2026-10-20.json",
+        "tests/test_migration.py"
+      ],
+      "basis": "git diff --name-only between the recorded commits; selected paths do not represent all publication dependencies"
+    },
+    {
+      "from_commit": "89dc427f0b920d67933e05b1f3f5fd430a054f6c",
+      "to_commit": "9fba3f67eb7a5b557b274958ec02a7f1014012d7",
+      "selected_paths": [
+        "services/github-state/src/repository.ts",
+        "services/github-state/src/repository_store.ts"
+      ],
+      "changed_selected_paths": [
+        "services/github-state/src/repository.ts"
+      ],
+      "all_changed_paths": [
+        "docs/github-state-migration.md",
+        "services/github-state/README.md",
+        "services/github-state/scripts/benchmark-migration-bytes.mjs",
+        "services/github-state/scripts/migrate.py",
+        "services/github-state/src/migration.ts",
+        "services/github-state/src/migration_target.ts",
+        "services/github-state/src/repository.ts",
+        "services/github-state/tests/migration.test.mjs",
+        "services/github-state/tests/migration_fixture.mjs",
+        "services/github-state/tests/migration_postgres.test.mjs",
+        "services/github-state/tests/publication_memory.mjs",
+        "services/github-state/tests/survey_cache.test.mjs",
+        "services/github-state/tests/worker_postgres.mjs",
+        "services/github-state/tests/worker_postgres.test.mjs",
+        "services/github-state/validation/migration-byte-sizing-2026-10-20.json",
+        "services/github-state/validation/publication-memory-native-2026-10-20.json",
+        "tests/test_migration.py"
+      ],
+      "basis": "git diff --name-only between the recorded commits; selected paths do not represent all publication dependencies"
+    }
+  ],
+  "migration_release": false,
+  "prior_local_fixture_summaries": [
+    {
+      "code_commit": "b74022a7c8b7935ac2d71da708c1b91004654dc8",
+      "at": "2026-10-21T00:32:37.677Z",
+      "node_version": "v24.20.0",
+      "complete": true,
+      "max_sampled_node_heap_used_bytes": 138622848,
+      "sample_count": 4
+    },
+    {
+      "code_commit": "1c0874ff32381a83bc7caae199defe3ca33a02eb",
+      "at": "2026-10-21T00:47:23.184Z",
+      "node_version": "v24.20.0",
+      "complete": true,
+      "max_sampled_node_heap_used_bytes": 135605072,
+      "sample_count": 5
+    }
+  ]
+}
