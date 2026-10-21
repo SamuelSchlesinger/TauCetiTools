@@ -86,8 +86,8 @@ def parser():
 def init_config(args):
     from .scaffold import initial_configuration
 
-    if args.output.exists():
-        raise ConfigError(f"Refusing to overwrite {args.output}; edit it or choose --output")
+    if args.output.exists() and args.output.read_bytes().strip():
+        raise ConfigError(f"Refusing to overwrite {args.output}; keep it and choose --output {args.output}.example")
     text = initial_configuration(args.repo, args.owner_login)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(text)
@@ -114,9 +114,9 @@ def main(argv=None):
 
             return run_script(args.name, args.args)
         if not source:
-            raise ConfigError(
-                "Pass --conf PATH_OR_URL. To start: tauceti-tools init --repo OWNER/PROJECT --owner-login HUMAN"
-            )
+            from .onboarding import configuration_problem
+
+            raise ConfigError(configuration_problem("", "No tauceti.toml was found in this directory or its Git checkout root.", fresh=True))
         project = (
             bootstrap(["--conf", source]) if args.command == "config" and args.action == "environment" else load(source)
         )
@@ -194,6 +194,10 @@ def main(argv=None):
                 subprocess.run(dispatch, check=True)
             findings = diagnose(project, extras=args.extras)
             if args.check:
+                blocked = next((f for f in findings if f.id == "github.auth" and f.status != "ready"), None)
+                if blocked and args.check != "github.auth":
+                    raise ConfigError(f"Cannot inspect {args.check}: {blocked.summary}.\n" +
+                                      "\n".join(blocked.urls + blocked.steps + ["  " + c for c in blocked.commands]))
                 findings = [f for f in findings if f.id == args.check]
                 if not findings:
                     raise ConfigError(f"Unknown check {args.check}; run doctor --json without --check to list check IDs")
