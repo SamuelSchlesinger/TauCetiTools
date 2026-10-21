@@ -38,7 +38,7 @@ jobs:
       TAUCETI_GITHUB_MAX_WAIT: '3700'
     steps:
       - name: Check out trusted default-branch reporting configuration
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.project_ref }}
           sparse-checkout: tauceti.toml
@@ -46,7 +46,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pinned shared implementation
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ inputs.tools_repository }}
           ref: ${{ inputs.tools_ref }}
@@ -98,7 +98,7 @@ jobs:
 
       - name: Download only the selected original-run status artifacts
         if: steps.intents.outputs.present == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           artifact-ids: ${{ steps.intents.outputs.ids }}
           github-token: ${{ github.token }}

@@ -118,6 +118,17 @@ In a Lean checkout with no project configuration, `tauceti doctor` reports how t
 create one; elsewhere it retains the worker-host diagnostics. `tauceti-tools doctor`
 always diagnoses project setup, including a missing configuration.
 
+`doctor --fix CHECK_ID` previews a repair; add `--apply` to perform it. A successful
+repair exits zero even when other setup checks remain unresolved. Run doctor separately
+afterward to inspect the remaining work; setup PRs must be merged before published-file
+checks can pass. A failed repair still returns an error.
+
+Doctor checks the published Lean package and workflows on GitHub at the configured
+content branch and the roadmap's default branch. A successful local `lake build` does
+not clear these checks: commit the package files and merge the setup PR into that
+branch, then rerun doctor. A missing-file report means doctor could read both the
+repository and the selected revision; otherwise it reports the access problem.
+
 Use `.github/CODEOWNERS` to assign human ownership, for example:
 
 ```text
@@ -155,6 +166,15 @@ Commit both `lean-toolchain` and `lake-manifest.json`. Set the Lean library root
 configuration's `lean.roots`. The supplied build harness currently renders one top-level
 Lean library root. Projects with several roots keep their existing custom build workflow. A project following Tau Ceti's empty-root policy uses a glob
 that builds every source module; its root module does not need individual imports.
+
+Before running Lake in either a content or roadmap checkout, add `/.lake/` to
+`.gitignore` if it is not already covered. Preserve existing ignore rules and commit
+`.gitignore` with the package files. This keeps build artifacts and downloaded
+dependencies out of `git add .`:
+
+```sh
+git check-ignore -q .lake/ || printf '\n/.lake/\n' >> .gitignore
+```
 
 For a new Mathlib-based starter, obtain the matching toolchain without guessing its version:
 
@@ -280,6 +300,11 @@ make an update pass.
 
 ## Roadmaps
 
+First complete the content Lean package and merge its toolchain, Lake configuration,
+manifest and Lean sources into the configured content branch. A new roadmap package
+copies that published toolchain and resolves the content repository as a dependency;
+an unmerged content setup PR or local build does not satisfy this prerequisite.
+
 In the roadmap repository create an active directory, for example `ExampleCetiRoadmap/`,
 with one subdirectory per area. Each area has `README.md`; `Suggested.lean` can give
 target statements and examples. Completed areas may live under `Completed/`.
@@ -332,6 +357,20 @@ The selected Tools package must be installed in the Python environment used for 
 Using `uv run --with git+https://github.com/TauCetiProject/TauCetiTools@SHA python ...`
 selects a specific Tools version. Replace `SHA` with the actual configured full SHA.
 
+Downstream setup includes Lean helper sources and project policy files. CI loads shared
+script implementations from the pinned Tools checkout instead of committing compatibility
+scripts for every feature. For local execution use `tauceti-tools script SCRIPT_NAME`.
+Disabled optional workflows and infrastructure test fixtures are omitted; existing project
+files are preserved. Generated external action references use fixed commit SHAs.
+Content and roadmap setup also add the Lake build directory to `.gitignore`, preserving
+existing rules.
+
+The doctor's workflow preview prints the proposed diff and removes its temporary clone.
+Preview and apply use the same branch name when the upstream base and generated changes
+are unchanged. Apply targets the repository's default branch and removes the temporary
+clone after opening the PR. If push or PR creation fails after committing, it prints and
+retains the prepared checkout for recovery.
+
 Commit the project configuration, CODEOWNERS and workflow changes on a branch and open a
 PR against the upstream default branch. Do not merge setup through an admin bypass.
 
@@ -361,6 +400,13 @@ Use your own name and a verified or GitHub-provided noreply address from
 <https://github.com/settings/emails>.
 
 ## Actions
+
+Reading or changing repository Actions settings requires repository admin access.
+Use `gh repo view --json viewerPermission` to check your permission. If it is not
+`ADMIN`, ask a repository administrator or organization owner to configure Actions.
+Broader token scopes cannot grant permissions your account lacks. If you are already
+an admin and the API returns 403, check your token's repository administration
+permissions, organization authorization and policy.
 
 Open `https://github.com/ExampleOrg/ExampleCeti/settings/actions`:
 
@@ -392,6 +438,11 @@ Do not give a downstream the private key of a shared multi-organization App.
 
 Register at `https://github.com/organizations/ExampleOrg/settings/apps/new` as an owner or
 App manager. For a personal owner use `https://github.com/settings/apps/new`.
+Repository maintain or admin access alone does not grant access to organization App
+registration. If the page returns 404, ask an organization owner to create the App or
+grant the appropriate App manager role. App management and installation permission are
+separate; an organization owner may also need to approve the installation. See
+[GitHub's App manager permissions](https://docs.github.com/en/organizations/managing-programmatic-access-to-your-organization/adding-and-removing-github-app-managers-in-your-organization).
 
 | Role | Repository permissions | Install on | Webhook |
 |---|---|---|---|
