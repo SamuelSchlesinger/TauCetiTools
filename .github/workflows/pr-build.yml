@@ -144,7 +144,7 @@ jobs:
       # executable audit, watchdog, cache, and bump-validation tooling comes from here.
       - name: Checkout workflow-pinned trusted build tooling
         if: ${{ env.INFRA != '1' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.project_ref }}
           path: gate
@@ -153,7 +153,7 @@ jobs:
 
       - name: Checkout pinned shared implementation
         if: ${{ env.INFRA != '1' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ inputs.tools_repository }}
           ref: ${{ inputs.tools_ref }}
@@ -277,7 +277,7 @@ jobs:
       # preparing the prospective integration below.
       - name: Checkout the exact candidate head (untrusted contents, no credentials)
         if: ${{ env.INFRA != '1' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ steps.pr.outputs.repo }}
           ref: ${{ steps.pr.outputs.sha }}
@@ -493,7 +493,7 @@ jobs:
       # immutable checkout. Main advancing later does not restart or invalidate this run.
       - name: Checkout current base policy input (trusted)
         if: ${{ env.INFRA != '1' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: "${{ steps.pr.outputs.base_sha }}"
           path: base
@@ -504,7 +504,7 @@ jobs:
 
       - name: Checkout the PR merge base (trusted historical configuration)
         if: ${{ env.INFRA != '1' }}
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ steps.pr.outputs.mergebase }}
           path: mergebase
@@ -1206,7 +1206,7 @@ jobs:
 
       - name: Hand the merge-group oleans to the isolated publisher
         if: ${{ steps.cache_stage.outputs.staged == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: lake-cache-staging-${{ steps.pr.outputs.status_sha }}
           path: ${{ runner.temp }}/lake-cache-staging
@@ -1428,7 +1428,7 @@ jobs:
 
       - name: Upload trusted tested H B T identity
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: tested-integration-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tested-integration.json
@@ -1440,7 +1440,7 @@ jobs:
         if: always()
         continue-on-error: true
         timeout-minutes: 3
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-host-resources-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-host-resources.json
@@ -1480,7 +1480,7 @@ jobs:
         if: always()
         continue-on-error: true
         timeout-minutes: 3
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-telemetry
           path: ${{ runner.temp }}/telemetry.json
@@ -1489,7 +1489,7 @@ jobs:
 
       - name: Retain unpublished CI statuses
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-status-intents-sandbox-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tauceti-status-intents/*.json
@@ -1547,7 +1547,7 @@ jobs:
       BORS_BASE_REF: ${{ github.event.client_payload.base_ref }}
     steps:
       - name: Check out workflow-pinned finalization tools
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.project_ref }}
           sparse-checkout: |
@@ -1559,7 +1559,7 @@ jobs:
           persist-credentials: false
 
       - name: Checkout pinned shared implementation
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: ${{ inputs.tools_repository }}
           ref: ${{ inputs.tools_ref }}
@@ -1596,7 +1596,7 @@ jobs:
         run: python3 scripts/finalize_batch.py
       - name: Retain unpublished batch status
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ci-status-intents-finalizer-${{ github.run_attempt }}
           path: ${{ runner.temp }}/tauceti-status-intent.json

@@ -179,8 +179,9 @@ def main(argv=None):
                 raise ConfigError("--apply requires --fix CHECK_ID")
             if args.fix:
                 repair(project, args.fix, apply=args.apply)
-                if not args.apply:
-                    return 0
+                if args.apply:
+                    print("Repair command completed. Run doctor again to check the remaining setup, including any PR that still needs merging.")
+                return 0
             if args.online:
                 if not args.workflow:
                     raise ConfigError(

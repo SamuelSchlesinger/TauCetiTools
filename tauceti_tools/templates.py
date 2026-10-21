@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
-import secrets
+import re
 import shutil
 import subprocess
 import sys
@@ -17,6 +18,28 @@ from .project import CANONICAL, ConfigError, Project, bootstrap, checkout_root
 
 HERE = Path(__file__).resolve().parent
 ASSETS = HERE / "assets"
+
+# Resolve tags when updating Tools, never when generating a downstream setup PR.
+# Verified against each action's GitHub commits API on 2026-10-21.
+ACTION_PINS = {
+    "actions/checkout@v4": "11d5960a326750d5838078e36cf38b85af677262",
+    "actions/cache@v4": "0057852bfaa89a56745cba8c7296529d2fc39830",
+    "actions/cache/restore@v4": "0057852bfaa89a56745cba8c7296529d2fc39830",
+    "actions/cache/save@v4": "0057852bfaa89a56745cba8c7296529d2fc39830",
+    "actions/deploy-pages@v4": "d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+    "actions/download-artifact@v4": "d3f86a106a0bac45b974a628896c90dbdf5c8093",
+    "actions/upload-artifact@v4": "ea165f8d65b6e75b540449e92b4886f43607fa02",
+    "actions/upload-pages-artifact@v3": "56afc609e74202658d3ffba0e8f6dda462b719fa",
+    "actions/create-github-app-token@v1": "d72941d797fd3113feb6b93fd0dec494b13a2547",
+    "leanprover/lean-action@v1": "24581d74d674803a25a81b10b059c5c0cdd344c6",
+}
+
+
+def pin_actions(text: str) -> str:
+    for action, commit in ACTION_PINS.items():
+        text = re.sub(r"(\buses:\s*)" + re.escape(action) + r"(?=\s|$)",
+                      lambda m, ref=action.split("@")[0] + "@" + commit: m[1] + ref, text)
+    return text
 
 
 def substitutions(project: Project) -> list[tuple[str, str]]:
@@ -171,17 +194,29 @@ else:
 '''
 
 
+def _write_gitignore(checkout: Path, patterns: list[str]) -> bool:
+    ignore = checkout / ".gitignore"
+    original = ignore.read_text() if ignore.exists() else ""
+    lines = original.splitlines()
+    missing = [pattern for pattern in patterns if not any(
+        entry in lines for entry in (pattern, pattern.lstrip("/"), pattern.rstrip("/"), pattern.strip("/"))
+    )]
+    if not missing:
+        return False
+    ignore.write_text(original + ("\n" if original and not original.endswith("\n") else "") + "\n".join(missing) + "\n")
+    return True
+
+
 def write_project(project: Project, checkout: Path, role: str = "content") -> list[str]:
     """Install generated callers and project policy, preserving existing policy files."""
     if role != "content":
         return write_auxiliary(project, checkout, role)
     written = []
+    ignored = ["/.lake/"]
     if project.feature("docs") and not project.legacy:
-        ignore = checkout / ".gitignore"
-        text = ignore.read_text() if ignore.exists() else ""
-        if "/docbuild/" not in text.splitlines():
-            ignore.write_text(text.rstrip("\n") + "\n/docbuild/\n")
-            written.append(".gitignore")
+        ignored.append("/docbuild/")
+    if _write_gitignore(checkout, ignored):
+        written.append(".gitignore")
     owners = project.raw.get("project", {}).get("codeowners", [])
     codeowners = checkout / ".github/CODEOWNERS"
     if owners and not codeowners.exists():
@@ -205,6 +240,12 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
         if not source.is_file() or "__pycache__" in source.parts or source.suffix == ".pyc":
             continue
         relative = source.relative_to(ASSETS / "project")
+        if not project.legacy and relative.name in ("publication_capacity_fixture.json", "stack_policy_fixtures.json"):
+            continue  # Infrastructure test fixtures belong to Tools, not downstream policy.
+        if not project.legacy and relative.parts[0] == "scripts" and source.suffix not in (".lean", ".txt", ".json"):
+            # CI obtains implementations from pinned Tools. Local operators can
+            # use `tauceti-tools script NAME`; only Lean sources and policy live here.
+            continue
         optional = {
             "claims-access.yml": "claims",
             "api-docs.yml": "docs",
@@ -214,12 +255,15 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
             "zulip-healthcheck.yml": "zulip",
             "toolchain-tags.yml": "security_audit",
             "nightly-verify.yml": "security_audit",
+            "roadmap-label.yml": "progress",
         }
         if relative.name in optional and not project.feature(optional[relative.name]):
             continue
         if relative.name == "pages.yml" and not project.legacy:
             continue  # The downstream API workflow also deploys its Pages artifact.
         if relative.name == "prepare_docs.py" and project.legacy:
+            continue
+        if relative.name == "pick-runner.yml" and not (project.feature("fleet") or project.feature("security_audit")):
             continue
         if relative.name == "update.yml" and not project.legacy:
             continue
@@ -275,6 +319,8 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
             text = text.replace("__REVIEW_REF__", review["ref"])
         if relative.as_posix() == ".github/actions/checkout-merge-policy/action.yml" and review.get("ref"):
             text = re.sub(r"(?m)^(        ref: )[0-9a-f]{40}$", lambda m, ref=review["ref"]: m[1] + ref, text)
+        if relative.suffix in (".yml", ".yaml"):
+            text = pin_actions(text)
         target.write_text(text)
         target.chmod(source.stat().st_mode & 0o777)
         written.append(str(relative))
@@ -328,6 +374,13 @@ def configuration_pr(project: Project, *, apply=False, role="content"):
     repository = project.repos.get(role)
     if not repository:
         raise ValueError(f"Set repositories.{role} before preparing this repository")
+    existing = subprocess.check_output([
+        "gh", "api", "--paginate", f"repos/{repository}/pulls?state=open&per_page=100", "--jq",
+        f'.[] | select((.head.repo.full_name // "" | ascii_downcase) == {json.dumps(repository.lower())} and (.head.ref | startswith("setup/tauceti-tools"))) | .html_url',
+    ], text=True).splitlines()
+    if existing:
+        print("An existing setup PR is open: " + existing[0])
+        return
     # Preserve a maintainer's checkout-local identity in the temporary setup clone.
     identity = {}
     for key in ("user.name", "user.email"):
@@ -336,80 +389,74 @@ def configuration_pr(project: Project, *, apply=False, role="content"):
             identity[key] = result.stdout.strip()
     print(f"Install pinned Tools helpers and workflow callers in {repository}; open a human-reviewed PR.")
     directory = Path(tempfile.mkdtemp(prefix="tauceti-setup-"))
-    subprocess.run(["gh", "repo", "clone", repository, str(directory), "--", "--depth", "1"], check=True)
-    for key, value in identity.items():
-        subprocess.run(["git", "-C", str(directory), "config", key, value], check=True)
-    base_branch = subprocess.check_output(["git", "-C", str(directory), "branch", "--show-current"], text=True).strip()
-    existing = subprocess.check_output([
-        "gh", "api", "--paginate", f"repos/{repository}/pulls?state=open&per_page=100", "--jq",
-        f'.[] | select((.head.repo.full_name // "" | ascii_downcase) == {json.dumps(repository.lower())} and (.head.ref | startswith("setup/tauceti-tools"))) | .html_url',
-    ], text=True).splitlines()
-    if existing:
-        print("An existing setup PR is open: " + existing[0])
-        return
-    # A previous setup branch can survive a squash merge. Never overwrite it.
-    branch = "setup/tauceti-tools-" + secrets.token_hex(4)
-    subprocess.run(["git", "-C", str(directory), "switch", "-c", branch], check=True)
-    write_project(project, directory, role)
-    from .project import read_source
+    retain = False
+    try:
+        subprocess.run(["gh", "repo", "clone", repository, str(directory), "--", "--depth", "1"], check=True)
+        for key, value in identity.items():
+            subprocess.run(["git", "-C", str(directory), "config", key, value], check=True)
+        base_branch = subprocess.check_output(["git", "-C", str(directory), "branch", "--show-current"], text=True).strip()
+        base_sha = subprocess.check_output(["git", "-C", str(directory), "rev-parse", "HEAD"], text=True).strip()
+        write_project(project, directory, role)
+        from .project import read_source
 
-    if role == "content":
-        (directory / "tauceti.toml").write_bytes(read_source(project.source))
-    subprocess.run(["git", "-C", str(directory), "add", "--all"], check=True)
-    if not apply:
-        subprocess.run(["git", "-C", str(directory), "diff", "--cached"], check=True)
-        print("Review every generated workflow replacement against your existing build and review policy; retain any project-specific requirements before applying.")
-        print(f"Preview saved in {directory}; inspect its files. Add --apply to commit, push and open the setup PR.")
-        return
-    if subprocess.run(["git", "-C", str(directory), "diff", "--cached", "--quiet"]).returncode == 0:
-        print("Already configured; no PR needed.")
-        return
-    author = subprocess.run(["git", "-C", str(directory), "var", "GIT_AUTHOR_IDENT"], capture_output=True, text=True)
-    if author.returncode:
-        raise ConfigError(
-            "Git needs your commit identity before creating the setup PR. In your original content checkout run:\n"
-            '  git config user.name "YOUR FULL NAME"\n'
-            '  git config user.email "YOUR VERIFIED GITHUB EMAIL"\n'
-            "Replace both values with your own identity; find your verified or GitHub-provided noreply address at "
-            "https://github.com/settings/emails . Rerun the same doctor --fix command from that checkout. "
-            "The setup clone inherits this local identity."
+        if role == "content":
+            (directory / "tauceti.toml").write_bytes(read_source(project.source))
+        subprocess.run(["git", "-C", str(directory), "add", "--all"], check=True)
+        diff = subprocess.check_output(["git", "-C", str(directory), "diff", "--cached", "--binary"])
+        if not diff:
+            print("Already configured; no PR needed.")
+            return
+        # Identical generated changes against the same base use the same branch.
+        # A new base after a squash merge gets a new name; no force-push is needed.
+        fingerprint = hashlib.sha256(base_sha.encode() + b"\0" + diff).hexdigest()[:12]
+        branch = "setup/tauceti-tools-" + fingerprint
+        print(f"Setup branch: {branch} (base: {base_branch}@{base_sha})")
+        if not apply:
+            subprocess.run(["git", "-C", str(directory), "diff", "--cached"], check=True)
+            print("Review every generated workflow replacement against your existing build and review policy; retain any project-specific requirements before applying.")
+            print("Preview only; the temporary checkout is removed. Add --apply to regenerate, commit, push and open the setup PR. The branch is unchanged if the base and generated diff are unchanged.")
+            return
+        subprocess.run(["git", "-C", str(directory), "switch", "-c", branch], check=True)
+        author = subprocess.run(["git", "-C", str(directory), "var", "GIT_AUTHOR_IDENT"], capture_output=True, text=True)
+        if author.returncode:
+            raise ConfigError(
+                "Git needs your commit identity before creating the setup PR. In your original content checkout run:\n"
+                '  git config user.name "YOUR FULL NAME"\n'
+                '  git config user.email "YOUR VERIFIED GITHUB EMAIL"\n'
+                "Replace both values with your own identity; find your verified or GitHub-provided noreply address at "
+                "https://github.com/settings/emails . Rerun the same doctor --fix command from that checkout. "
+                "The setup clone inherits this local identity."
+            )
+        subprocess.run(
+            ["git", "-C", str(directory), "commit", "-m", "Configure shared Tau Ceti project tooling"], check=True
         )
-    subprocess.run(
-        ["git", "-C", str(directory), "commit", "-m", "Configure shared Tau Ceti project tooling"], check=True
-    )
-    # gh pr create can choose the operator's fork when upstream write access is absent.
-    pushed = subprocess.run(["git", "-C", str(directory), "push", "-u", "origin", branch])
-    if pushed.returncode:
-        raise ConfigError(
-            f"Could not push the setup branch; your prepared commit is in {directory}. "
-            "For browser-based GitHub CLI authentication run:\n"
-            "  gh auth refresh --hostname github.com --scopes workflow\n"
-            "  gh auth setup-git\n"
-            "If GH_TOKEN or GITHUB_TOKEN is set, it overrides saved credentials; unset it to use browser login. "
-            "Confirm your account has repository write access; token scopes do not grant that access. "
-            "Then rerun the same doctor --fix command, or retry git push from the saved directory."
+        # Retain the prepared commit if pushing or PR creation fails, for recovery.
+        retain = True
+        pushed = subprocess.run(["git", "-C", str(directory), "push", "-u", "origin", branch])
+        if pushed.returncode:
+            raise ConfigError(
+                f"Could not push the setup branch; your prepared commit is in {directory}. "
+                "For browser-based GitHub CLI authentication run:\n"
+                "  gh auth refresh --hostname github.com --scopes workflow\n"
+                "  gh auth setup-git\n"
+                "If GH_TOKEN or GITHUB_TOKEN is set, it overrides saved credentials; unset it to use browser login. "
+                "Confirm your account has repository write access; token scopes do not grant that access. "
+                "Then retry git push from the saved directory. If the branch was already pushed by an earlier attempt, "
+                f"open its PR with gh pr create --repo {repository} --base {base_branch} --head {branch}."
+            )
+        body = directory / ".git/tauceti-pr-body"
+        body.write_text("Configure the project with pinned shared TauCetiTools helpers and workflows.\n\nRoadmap: none\n")
+        subprocess.run(
+            ["gh", "pr", "create", "--repo", repository, "--base", base_branch, "--head", branch,
+             "--title", "Configure shared Tau Ceti tools", "--body-file", str(body)],
+            cwd=directory, check=True,
         )
-    body = directory / ".git/tauceti-pr-body"
-    body.write_text("Configure the project with pinned shared TauCetiTools helpers and workflows.\n\nRoadmap: none\n")
-    subprocess.run(
-        [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            repository,
-            "--base",
-            base_branch,
-            "--head",
-            branch,
-            "--title",
-            "Configure shared Tau Ceti tools",
-            "--body-file",
-            str(body),
-        ],
-        cwd=directory,
-        check=True,
-    )
+        retain = False
+    finally:
+        if retain:
+            print(f"Prepared setup checkout retained at {directory} for recovery.")
+        else:
+            shutil.rmtree(directory)
 
 
 def write_auxiliary(project: Project, checkout: Path, role: str) -> list[str]:
@@ -421,6 +468,8 @@ def write_auxiliary(project: Project, checkout: Path, role: str) -> list[str]:
     pin = project.tool("tools")
     conf_url = f"https://raw.githubusercontent.com/{project.content}/{project.branch}/tauceti.toml"
     written = []
+    if role == "roadmap" and _write_gitignore(checkout, ["/.lake/"]):
+        written.append(".gitignore")
     for original in source.rglob("*"):
         if not original.is_file() or "__pycache__" in original.parts:
             continue
@@ -470,6 +519,8 @@ def write_auxiliary(project: Project, checkout: Path, role: str) -> list[str]:
         target.parent.mkdir(parents=True, exist_ok=True)
         if role == "data" and target.exists():
             continue
+        if relative.suffix in (".yml", ".yaml"):
+            text = pin_actions(text)
         target.write_text(text)
         written.append(str(relative))
     if role == "ci":

@@ -32,6 +32,8 @@ def app_setup(project, role, *, organization=False):
         f"On that App's General page copy the numeric App ID (not Client ID). Under Install App choose each required account ({owners}) → Only select repositories. Select that account's repositories from {', '.join(repos)}, then Install. For an existing installation use Configure → Repository access, add these repositories, and Save.",
         f"Prepare the private credential directory:\n$ mkdir -p {shlex.quote(str(directory))}\n$ chmod 700 {shlex.quote(str(directory))}\nSave the numeric App ID as the only line of {id_file}. Reuse your existing PEM at {key_file}, or on the same App's General page click Generate a private key and move the downloaded PEM there. Then:\n$ chmod 600 {shlex.quote(str(id_file))} {shlex.quote(str(key_file))}",
     ]
+    if organization:
+        steps.insert(0, f"Organization App registration requires an organization owner or an authorized GitHub App manager for {owner}; repository maintain or admin access alone is insufficient. If Developer settings or New GitHub App returns 404, ask an organization owner to register {manifest['name']} or grant the appropriate App manager role. Managing an App does not itself grant permission to install it; ask the owner to approve the installation when required by organization policy.")
     if role == "claims" and "claims" not in project.repos:
         steps.insert(0, f"Set repositories.claims = \"{repos[0]}\" in {project.source}. Confirm whether it exists with gh repo view {repos[0]}; if absent create it with gh repo create {repos[0]} --public --add-readme. Install this App only on that claims repository.")
     return [settings], steps

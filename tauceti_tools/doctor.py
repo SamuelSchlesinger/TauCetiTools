@@ -38,6 +38,10 @@ class Finding:
         return result
 
 
+class _MissingFile(str):
+    """A contents 404 after repository and revision access have been verified."""
+
+
 class GitHub:
     def __init__(self):
         self.cache = {}
@@ -58,7 +62,18 @@ class GitHub:
                     code = next(
                         (x for x in ("401", "403", "404", "429", "500", "502", "503") if x in proc.stderr), "unknown"
                     )
-                    self.cache[path] = (None, f"GitHub HTTP {code}; inaccessible does not establish absence")
+                    error = f"GitHub HTTP {code}; inaccessible does not establish absence"
+                    resource = urllib.parse.urlsplit(path)
+                    parts = resource.path.split("/", 4)
+                    if code == "404" and len(parts) == 5 and parts[0] == "repos" and parts[3] == "contents":
+                        repo = "/".join(parts[1:3])
+                        info, repo_error = self.read(f"repos/{repo}")
+                        ref = urllib.parse.parse_qs(resource.query).get("ref", [(info or {}).get("default_branch")])[0]
+                        if not repo_error and ref:
+                            _, ref_error = self.read(f"repos/{repo}/commits/{urllib.parse.quote(ref, safe='')}")
+                            if not ref_error:
+                                error = _MissingFile(f"Missing file: {parts[4]} in {repo} at {ref}")
+                    self.cache[path] = (None, error)
                 else:
                     try:
                         pages = json.loads(proc.stdout) if paginate else [json.loads(proc.stdout)]
@@ -80,6 +95,22 @@ def _items(value, key):
 
 def _cmd(*args):
     return shlex.join(str(x) for x in args)
+
+
+def _file_status(error):
+    return "failed" if isinstance(error, _MissingFile) else "unknown" if error else "ready"
+
+
+def _actions_access(error, info):
+    """Explain the settings endpoint's admin requirement without guessing token scopes."""
+    if "HTTP 403" not in error:
+        return error
+    admin = (info or {}).get("permissions", {}).get("admin")
+    if admin is False:
+        return "GitHub HTTP 403; needs repository admin access. Your account is not a repo admin; ask a repository administrator or organization owner to configure Actions. Broader token scopes cannot grant your account admin access."
+    if admin is True:
+        return "GitHub HTTP 403; your account has repository admin access, but this credential cannot read Actions settings. Check the token's repository administration permissions, organization authorization and policy."
+    return error + ". Reading or changing Actions settings requires repository admin access; ask a repository administrator or organization owner to check your access and the token's permissions."
 
 
 def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
@@ -228,6 +259,7 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
         findings.extend(dependency_findings(project, gh, again))
     if repo_info.get("content"):
         value, error = gh.read(f"repos/{repo}/actions/permissions")
+        error = _actions_access(error, repo_info["content"])
         status = "unknown" if error else "ready" if value.get("enabled") else "failed"
         findings.append(
             Finding(
@@ -236,10 +268,12 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
                 error or f"Actions enabled: {value.get('enabled')}",
                 "GitHub Actions enabled",
                 commands=[
+                    _cmd("gh", "repo", "view", repo, "--json", "viewerPermission"),
                     _cmd("gh", "api", "--method", "PUT", f"repos/{repo}/actions/permissions", "-F", "enabled=true")
                 ],
                 urls=[f"https://github.com/{repo}/settings/actions"],
                 steps=[
+                    "Reading and changing these Actions settings requires repository admin access. If viewerPermission is not ADMIN, ask a repository administrator or organization owner to perform this step.",
                     "Open Settings → Actions → General. Enable Actions and allow the pinned actions and reusable workflows named in the generated workflow files. An organization policy may need its owner to allow these repositories."
                 ],
                 verify=_cmd("gh", "api", f"repos/{repo}/actions/permissions"),
@@ -259,7 +293,7 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
             required_files.append(".github/workflows/update-upstreams.yml")
         for path in required_files:
             value, error = gh.read(f"repos/{repo}/contents/{path}?ref={project.branch}")
-            status = "unknown" if error else "ready"
+            status = _file_status(error)
             summary = error or path
             if not error and value.get("encoding") == "base64":
                 text = base64.b64decode(value["content"]).decode("utf-8")
@@ -291,7 +325,7 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
                     urls=[f"https://github.com/{repo}/tree/{project.branch}/.github"],
                     steps=[
                         "First select the Tools and Review versions reported above, and create/access the content repository. The preview command clones it into a temporary checkout; your working tree is preserved.",
-                        f"Preview the configuration and workflow changes:\n$ {_cmd('tauceti-tools', 'doctor', '--conf', conf, '--fix', 'workflows')}\nInspect the printed diff and files, then open the setup PR:\n$ {_cmd('tauceti-tools', 'doctor', '--conf', conf, '--fix', 'workflows', '--apply')}",
+                        f"Preview the configuration and workflow changes:\n$ {_cmd('tauceti-tools', 'doctor', '--conf', conf, '--fix', 'workflows')}\nInspect the printed diff; the temporary preview checkout is removed. Then open the setup PR:\n$ {_cmd('tauceti-tools', 'doctor', '--conf', conf, '--fix', 'workflows', '--apply')}",
                         "Open the PR URL printed by the command, review and merge it as a human. On a new repository, install these workflows before requiring their status checks. Then rerun doctor.",
                     ],
                     verify=again,
@@ -574,12 +608,13 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
                         else [_cmd("gh", "workflow", "list", "--repo", repo)]
                     ),
                     urls=[latest["html_url"] if latest else f"https://github.com/{repo}/actions"],
-                    steps=[
-                        "Use the existing workflow's normal trigger. pr-build runs on a content pull request; Auto-merge runs after a build or review update.",
+                    steps=([
+                        "After merging the setup workflows into the default branch, open or update a content pull request to trigger pr-build. Inspect its build and status-reporting steps.",
                         f"For pr-build, list open content PRs and choose the number to build:\n$ {_cmd('gh', 'pr', 'list', '--repo', repo, '--state', 'open')}\nThen run:\n$ {_cmd('gh', 'workflow', 'run', 'pr-build.yml', '--repo', repo, '-f', 'pr=PR_NUMBER')}\nReplace PR_NUMBER with that open PR's number. The setup workflows must already be merged into the default branch.",
+                    ] if consumer == "pr-build" else [
                         "Auto-merge has no manual-dispatch trigger. It runs after a normal content build or review update; use the Actions run linked above to inspect its App-token step. It only merges content that passes the configured review and build policy.",
                         "A successful overall run is not proof that an optional credential was used. Inspect the App-token and consuming steps; skipped/fallback steps leave the credential unverified.",
-                    ],
+                    ]),
                     verify=again,
                     section="verification",
                 )
@@ -601,15 +636,20 @@ def package_findings(project, gh, repo_info, again):
             continue
         repo = project.repos[role]
         branch = project.branch if role == "content" else repo_info[role].get("default_branch", project.branch)
-        missing = []
+        errors = []
         for path in ("lean-toolchain", "lake-manifest.json"):
             _, error = gh.read(f"repos/{repo}/contents/{path}?ref={branch}")
             if error:
-                missing.append(path)
+                errors.append(error if isinstance(error, _MissingFile) else f"{path}: {error}")
         _, toml_error = gh.read(f"repos/{repo}/contents/lakefile.toml?ref={branch}")
         _, lean_error = gh.read(f"repos/{repo}/contents/lakefile.lean?ref={branch}")
-        if toml_error and (role == "content" or lean_error):
-            missing.append("lakefile.toml" if role == "content" else "lakefile.toml or lakefile.lean")
+        if toml_error and role == "content":
+            errors.append(toml_error if isinstance(toml_error, _MissingFile) else f"lakefile.toml: {toml_error}")
+        elif toml_error and lean_error:
+            if all(isinstance(e, _MissingFile) for e in (toml_error, lean_error)):
+                errors.append(_MissingFile(f"{toml_error}\n{lean_error}"))
+            else:
+                errors.append(f"lakefile.toml: {toml_error}\nlakefile.lean: {lean_error}")
         lean_format = role == "content" and not lean_error
         root = project.roots[0] if role == "content" else project.roadmap_dir
         if role == "content":
@@ -620,9 +660,9 @@ def package_findings(project, gh, repo_info, again):
                         '[[lean_exe]]\nname = "axioms"\nroot = "scripts.Axioms"\n'
                         '[[lean_exe]]\nname = "module-system"\nroot = "scripts.ModuleSystem"')
             setup = [
-                f"In a local checkout of {repo}, keep the existing Lean package if it has one. Commit and publish lean-toolchain, lakefile.toml, and lake-manifest.json. API inaccessibility does not establish that files are absent.",
-                f"Set lean.roots in {project.source} to the package's actual Lean module root ({root} is currently selected). In the checkout run lake update and lake build; commit the resolved lake-manifest.json with the reviewed package configuration.",
-                "Only if starting a new Mathlib-based package, obtain its matching toolchain:\n$ gh api repos/leanprover-community/mathlib4/contents/lean-toolchain?ref=master --jq '.content | @base64d' > lean-toolchain\n$ elan toolchain install \"$(cat lean-toolchain)\"\nFor a different direct dependency use that dependency's selected toolchain; keep its existing package dependencies.",
+                f"In a local checkout of {repo}, keep the existing Lean package if it has one. Set lean.roots in {project.source} to the package's actual Lean module root ({root} is currently selected).",
+                "For an existing package, run lake update and lake build, then commit the resolved lake-manifest.json with the reviewed package configuration. Use the remaining starter steps only for a new package.",
+                "Only if starting a new Mathlib-based package, obtain its matching toolchain:\n$ " + _cmd("gh", "api", "repos/leanprover-community/mathlib4/contents/lean-toolchain?ref=master", "--jq", ".content | @base64d") + " > lean-toolchain\n$ elan toolchain install \"$(cat lean-toolchain)\"\nFor a different direct dependency use that dependency's selected toolchain; keep its existing package dependencies.",
                 f"For that new package, write lakefile.toml with:\n{lakefile}\nThe axioms and module-system sources arrive with the project workflow setup; install that setup before building these executables.",
                 f"For a new package create its source directory and empty root module:\n$ mkdir -p {shlex.quote(root.replace('.', '/'))}\n$ printf 'module\\n' > {shlex.quote(root.replace('.', '/') + '.lean')}\nAdd your mathematical source modules there, with a Mathlib-style copyright/license/Authors header followed by module. After the workflow setup supplies scripts/Axioms.lean and scripts/ModuleSystem.lean:\n$ lake update\n$ lake exe cache get\n$ lake build\nCommit the toolchain, lakefile, manifest and Lean sources through a human-reviewed PR.",
             ]
@@ -632,23 +672,36 @@ def package_findings(project, gh, repo_info, again):
                         f'[[lean_lib]]\nname = "{root}"\nglobs = ["{root}.*"]\n'
                         f'[[lean_lib]]\nname = "{project.completed_dir}"\nglobs = ["{project.completed_dir}.+"]')
             setup = [
-                f"In a local checkout of {repo}, keep an existing working roadmap package. For a new one, copy the content repository's toolchain:\n$ gh api repos/{project.content}/contents/lean-toolchain?ref={project.branch} --jq '.content | @base64d' > lean-toolchain",
+                f"First finish the Content Lean package setup: merge lean-toolchain, lakefile.toml, lake-manifest.json and Lean sources into {project.content}@{project.branch}. The roadmap depends on that published package; a local build or an unmerged content PR does not satisfy this prerequisite.",
+                f"In a local checkout of {repo}, keep an existing working roadmap package. Only after the content setup is merged, copy its toolchain for a new package:\n$ " + _cmd("gh", "api", f"repos/{project.content}/contents/lean-toolchain?ref={project.branch}", "--jq", ".content | @base64d") + " > lean-toolchain",
                 f"For a new package write lakefile.toml with:\n{lakefile}\nUse the actual name from the content repository's lakefile for the require name if it differs from {project.roots[0]}.",
                 f"For a new package create the empty root modules and source directories:\n$ mkdir -p {shlex.quote(root)} {shlex.quote(project.completed_dir)}\n$ touch {shlex.quote(root + '.lean')} {shlex.quote(project.completed_dir + '.lean')}\n$ lake update\n$ lake build\nCommit the Lake files and root modules through a human-reviewed PR. Add human-written target statements under the configured roadmap directory; they may contain sorry.",
             ]
+        published = f"This check reads GitHub at {repo}@{branch}, not your local checkout. Local lake update or lake build will not clear it: commit the package files and merge the PR into {branch}, then rerun doctor."
+        ignore = "Before running Lake, ensure /.lake/ is in .gitignore so git add . cannot stage build artifacts and downloaded dependencies. Preserve existing ignore rules; add the rule only if it is not already covered:\n$ git check-ignore -q .lake/ || printf '\\n/.lake/\\n' >> .gitignore\nCommit .gitignore with the package files."
+        if lean_format:
+            status, summary = "failed", "Project root uses lakefile.lean; lakefile.toml is required"
+        elif errors:
+            status = "failed" if any(isinstance(e, _MissingFile) for e in errors) else "unknown"
+            summary = "\n".join(errors)
+        else:
+            status, summary = "ready", f"Lean package files are published in {repo}@{branch}"
+        if role == "roadmap" and status != "ready" and not any(f.id == "lean.content" and f.status == "ready" for f in findings):
+            summary += f"\nPrerequisite unresolved: finish and merge the content package in {project.content}@{project.branch} first."
         findings.append(Finding(
-            "lean." + role, "failed" if lean_format else "unknown" if missing else "ready",
-            "Project root uses lakefile.lean; lakefile.toml is required" if lean_format else "Cannot read package files: " + ", ".join(missing) if missing else f"Lean package files are published in {repo}",
+            "lean." + role, status, summary,
             "Published Lean toolchain, Lake package and resolved dependencies", steps=([
+                published,
+                ignore,
                 "In the repository checkout, if lakefile.toml is absent run:\n$ lake translate-config toml\nThis writes lakefile.toml and renames the original to lakefile.lean.bak. Review both files, run lake update and lake build, then commit the conversion through human review. If both formats already exist, compare them and retain the reviewed TOML configuration; move the Lean file to an unused backup name so it is no longer active. Only the project root requires TOML: upstream dependencies, including Mathlib, can keep Lean lakefiles.",
-            ] if lean_format else setup),
+            ] if lean_format else [published, ignore, *setup]),
             urls=[f"https://github.com/{repo}"], verify=again, section="lean-and-upstream-dependencies" if role == "content" else "roadmap-lean-package"))
     if repo_info.get("roadmap"):
         repo = project.repos["roadmap"]
         branch = repo_info["roadmap"].get("default_branch", project.branch)
         _, error = gh.read(f"repos/{repo}/contents/.github/workflows/ci.yml?ref={branch}")
         findings.append(Finding(
-            "roadmap.workflows", "unknown" if error else "ready",
+            "roadmap.workflows", _file_status(error),
             error or "Roadmap build workflow installed", "Roadmap targets build in their own Lean package",
             steps=[
                 "First publish the content configuration with its selected Tools version and prepare the roadmap Lake package.",
