@@ -9,7 +9,7 @@ import argparse
 import base64
 from collections import defaultdict
 from dataclasses import dataclass, asdict, field
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 
 REPO = "TauCetiProject/TauCeti"
@@ -44,6 +44,10 @@ class UnsupportedCommit(Gap):
 
 class BudgetGap(Gap):
     """The sweep cannot continue observing within its global budget."""
+
+
+class RaceGap(Gap):
+    """Fresh identities changed; retry against the next batch snapshot."""
 
 
 class ChildGap(Gap):
@@ -91,8 +95,14 @@ class API:
                 raw = response.read(min(8 * MAX_BYTES, 64 * MAX_BYTES - self.bytes,
                                         getattr(self, "child_bytes", 64 * MAX_BYTES) - self.bytes) + 1)
         except HTTPError as error:
-            if error.code in (403, 429):
-                raise BudgetGap("API permission/rate limit refused; sweep stopped") from error
+            headers = error.headers or {}
+            message = error.read(4096).decode(errors="replace").lower() if error.code == 403 else ""
+            if error.code == 429 or (error.code == 403 and
+                    (headers.get("x-ratelimit-remaining") == "0" or headers.get("retry-after")
+                     or any(word in message for word in
+                            ("rate limit", "abuse detection", "creating content too quickly",
+                             "was submitted too quickly")))):
+                raise BudgetGap("API rate limit refused; sweep stopped") from error
             raise
         self.bytes += len(raw)
         if self.bytes > 64 * MAX_BYTES:
@@ -276,6 +286,7 @@ class Source:
             (self.root / "objects/info/alternates").write_text(str(Path(alternates).resolve()) + "\n")
         self.git("remote", "add", "origin", remote or f"https://github.com/{REPO}.git")
         self.commits_cache = {}
+        self.failed_fetches = set()
         self.first_parent_cache = {}
         self.historical_commits_cache = {}
         self.patch_cache = {}
@@ -326,6 +337,7 @@ class Source:
                         raise
                     except (Gap, subprocess.TimeoutExpired):
                         self.commits_cache[p.head] = None
+                        self.failed_fetches.add(p.number)
         shallow = self.root / "shallow"
         if shallow.exists():
             # The trusted checkout supplies complete main history. Depth-limited
@@ -708,7 +720,7 @@ def enforce(api, child, parent, evidence, actor):
     existing = next((c for c in comments if c["user"]["login"] == actor
                      and c["body"].startswith(marker + "\nStacked PRs are not allowed in Tau Ceti.")), None)
     if not unchanged(api, child, parent, evidence.main):
-        raise Gap("identities changed before comment; retry with fresh observations")
+        raise RaceGap("identities changed before comment; retry with fresh observations")
     if not existing:
         api.call(f"issues/{child.number}/comments", "POST", {"body": body})
     elif existing["body"] != body:
@@ -716,7 +728,7 @@ def enforce(api, child, parent, evidence, actor):
         # explanation for this child head while updating its current evidence.
         api.call(f"issues/comments/{int(existing['id'])}", "PATCH", {"body": body})
     if not unchanged(api, child, parent, evidence.main):
-        raise Gap("identities changed before close; explanation retained, closure declined")
+        raise RaceGap("identities changed before close; explanation retained, closure declined")
     if preserve_gap:
         raise Gap("repository-head bors marker: branch preservation unproved, closure declined")
     # PATCH closes without deleting the branch. GitHub emits pull_request.closed;
@@ -783,15 +795,115 @@ def verify_withdrawal(child, before, observe, sleep=time.sleep):
     raise Gap("closed child still admitted in bors; withdrawal pending, inspect close webhook/reconciliation")
 
 
+
+class BatchProgress:
+    """An uploaded checkpoint commits discovery plus unfinished work, never a safety verdict."""
+
+    def __init__(self, path, raw_prs, targets, sweep=False, apply=False):
+        self.started = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.policy = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        self.mode = "apply" if apply else "dry-run"
+        self.completed = 0
+        self.state = {"version": 1, "mode": self.mode, "policy": self.policy,
+                      "watermark": None, "pending": [], "checked": {}, "failed": {}}
+        self.recovery = "missing checkpoint"
+        if path and path.exists():
+            try:
+                if path.stat().st_size > 1024 * 1024:
+                    raise ValueError("checkpoint too large")
+                state = json.loads(path.read_text())
+                if (state["version"] != 1 or state["mode"] != self.mode or state["policy"] != self.policy
+                        or timestamp(state["watermark"]) > timestamp(self.started)
+                        or not isinstance(state["pending"], list) or len(state["pending"]) > MAX_PRS
+                        or not all(type(n) is int and n > 0 for n in state["pending"])
+                        or any(not isinstance(state[name], dict) or len(state[name]) > MAX_PRS
+                               for name in ("checked", "failed"))):
+                    raise ValueError("invalid checkpoint schema")
+                for n, identity in {**state["checked"], **state["failed"]}.items():
+                    if (not n.isdigit() or int(n) <= 0 or not isinstance(identity, list)
+                            or len(identity) != 3 or not isinstance(identity[2], str)):
+                        raise ValueError("invalid checked identity")
+                    oid(identity[0])
+                    timestamp(identity[1])
+                self.state = state
+                self.recovery = None
+            except (KeyError, TypeError, ValueError, OSError, Gap):
+                self.recovery = "invalid checkpoint"
+        self.identities = {}
+        for raw in raw_prs:
+            n = raw.get("number")
+            if type(n) is not int or n <= 0:
+                raise Gap("open index lacks a canonical PR number")
+            # Even unparsable source metadata stays pending, never silently retired.
+            self.identities[n] = [oid(raw["head"]["sha"]),
+                                  raw["updated_at"], raw["base"]["ref"]]
+            timestamp(raw["updated_at"])
+        opened = set(self.identities)
+        pending = list(dict.fromkeys(n for n in self.state["pending"] if n in opened))
+        # The full bounded open index is already needed for parent comparisons.
+        # Compare identities directly: a skipped pagination entry or delayed API
+        # read cannot make a never-checked PR fall behind a timestamp window.
+        targets = (targets or set()) & opened
+        changed = {n for n, identity in self.identities.items()
+                   if identity != self.state["checked"].get(str(n))
+                   and identity != self.state["failed"].get(str(n))}
+        # Sweep-only rechecks must not repeatedly displace the unfinished tail.
+        # An event target gets prompt inspection; all other carried work stays FIFO.
+        self.state["pending"] = list(dict.fromkeys(
+            sorted(targets) + pending + sorted(changed) + (sorted(opened) if sweep else [])))
+        for name in ("checked", "failed"):
+            self.state[name] = {n: v for n, v in self.state[name].items() if int(n) in opened}
+        self.state["watermark"] = self.started
+        emit(batch=True, recovery=self.recovery, covered_through=self.started,
+             pending=len(self.state["pending"]))
+
+    def finish(self, number, success, retry_soon=False, first=False):
+        self.state["pending"].remove(number)
+        if success:
+            self.completed += 1
+            self.state["checked"][str(number)] = self.identities[number]
+            self.state["failed"].pop(str(number), None)
+        elif retry_soon:
+            self.state["checked"].pop(str(number), None)
+            if first:
+                self.state["pending"].insert(0, number)
+            else:
+                self.state["pending"].append(number)
+        else:
+            self.state["checked"].pop(str(number), None)
+            # Retain unknown coverage without spending every later batch on the
+            # same expensive/ambiguous identity. Retry on change, event or sweep.
+            self.state["failed"][str(number)] = self.identities[number]
+
+    def save(self, path):
+        # Publishing this file is a separate workflow step. Failed publication leaves
+        # the previously uploaded checkpoint authoritative; repeated inspection is safe.
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(json.dumps(self.state, sort_keys=True) + "\n")
+        temporary.replace(path)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--pr", type=int, default=0)
     ap.add_argument("--report", type=Path)
     ap.add_argument("--github-event", type=Path)
+    ap.add_argument("--prs", type=int, nargs="*", default=[])
+    ap.add_argument("--state-in", type=Path)
+    ap.add_argument("--state-out", type=Path)
+    ap.add_argument("--sweep", action="store_true")
     args = ap.parse_args()
-    if args.pr < 0:
+    if args.pr < 0 or any(n <= 0 for n in args.prs):
         raise Gap("invalid PR number")
+    if args.pr and (args.prs or args.state_out):
+        raise Gap("--pr is a focused canary; do not combine with --prs or --state-out")
+    if (args.state_in or args.sweep) and not args.state_out:
+        raise Gap("--state-in and --sweep require --state-out")
+    return audit(args)
+
+
+def audit(args):
     if args.report:
         # Never accept an API/PR-supplied report path.
         sys.stdout = args.report.open("w")
@@ -800,7 +912,10 @@ def main():
     prs = []
     metadata_gaps = set()
     incomplete_index = False
-    for raw in api.pages("pulls?state=open&sort=created&direction=asc", MAX_PRS):
+    # Mutable pagination can return a PR twice; inspect its last observed identity once.
+    raw_prs = list({raw["number"]: raw for raw in
+                    api.pages("pulls?state=open&sort=created&direction=asc", MAX_PRS)}.values())
+    for raw in raw_prs:
         try:
             prs.append(PR.parse(raw))
         except (Gap, KeyError, ValueError) as error:
@@ -809,15 +924,42 @@ def main():
             metadata_gaps.add(number)
             incomplete_index = True
     main_sha = api.main()
-    targets = {args.pr} if args.pr else event_targets(event, prs)
+    targets = ({args.pr} if args.pr else set(args.prs))
+    if not targets:
+        try:
+            targets = event_targets(event, prs)
+        except Gap:
+            if not args.state_out:
+                raise
+            # A stale wake with no current branch match need not stall discovery.
+            # Coverage comes from current PR metadata and the retained checkpoint.
+            targets = set()
+    progress = None
+    if args.state_out:
+        progress = BatchProgress(args.state_in, raw_prs, targets,
+                                 args.sweep or targets is None, args.apply)
+        for n in list(progress.state["pending"]):
+            if n in metadata_gaps:
+                progress.finish(n, False)
+        targets = set(progress.state["pending"])
+        progress.save(args.state_out)
     selected = [p for p in prs if targets is None or p.number in targets]
     if targets is not None and not selected:
-        if incomplete_index:
+        if incomplete_index and not progress:
             raise Gap("requested/event PR metadata unavailable in the bounded index")
-        emit(classification="superseded", reason="target absent from complete open index", selected=0)
+        if progress:
+            emit(batch_summary=True, covered_through=progress.state["watermark"],
+                 pending=len(progress.state["pending"]), metadata_gaps=sorted(metadata_gaps),
+                 retry_on_change_or_sweep=len(progress.state["failed"]))
+        else:
+            emit(classification="superseded", reason="target absent from complete open index", selected=0)
         return False
-    selected.sort(key=lambda p: p.number, reverse=True)
-    emit(scope="backlog" if targets is None else "focused", selected=[p.number for p in selected])
+    if progress:
+        order = {n: i for i, n in enumerate(progress.state["pending"])}
+        selected.sort(key=lambda p: order[p.number])
+    else:
+        selected.sort(key=lambda p: p.number, reverse=True)
+    emit(scope="batch" if progress else "backlog" if targets is None else "focused", selected=[p.number for p in selected])
     # Inspect a bounded recent closed index without interpreting descriptions.
     # Older closed parents remain outside coverage; never infer landing from state.
     recent_closed = api.call("pulls?state=closed&sort=updated&direction=desc&per_page=64&page=1")
@@ -845,6 +987,8 @@ def main():
     failures, unknowns = 0, len(metadata_gaps if targets is None else targets & metadata_gaps)
     with tempfile.TemporaryDirectory(prefix="no-stack-") as directory:
         source = Source(directory, api, main_sha, Path(common) / "objects")
+        if progress:
+            source.deadline = min(source.deadline, api.deadline)
         source.fetch(prs)
         detector = Detector(api, source, prs)
         for number, gap in sorted(detector.gaps.items()):
@@ -852,6 +996,9 @@ def main():
                  main=main_sha, classification="unknown", gap=gap)
         for child in selected:
             mutation_started = False
+            success = False
+            retry_soon = False
+            retry_first = False
             try:
                 api.begin_child()
                 source.begin_child()
@@ -866,13 +1013,13 @@ def main():
                      parent_author_id=detector.prs[evidence.parent].author_id if evidence else None)
                 if evidence and not args.apply:
                     if not unchanged(api, child, detector.prs[evidence.parent], main_sha):
-                        raise Gap("dry-run preflight identities changed; no mutation")
+                        raise RaceGap("dry-run preflight identities changed; no mutation")
                     emit(pr=child.number, preflight="current child/parent/main identities and live branches verified")
                 if args.apply:
                     if evidence:
                         parent = detector.prs[evidence.parent]
                         if not unchanged(api, child, parent, main_sha):
-                            raise Gap("identities changed before blocking label")
+                            raise RaceGap("identities changed before blocking label")
                         from bors_observation import observation
                         before = None
                         try:
@@ -881,7 +1028,7 @@ def main():
                         except Exception as error:
                             emit(pr=child.number, bors_gap=str(error))
                         if not unchanged(api, child, parent, main_sha):
-                            raise Gap("identities changed during bors observation")
+                            raise RaceGap("identities changed during bors observation")
                         mutation_started = True
                         block(api, child)
                         enforce(api, child, parent, evidence, actor)
@@ -893,16 +1040,38 @@ def main():
                         if not owns_block(api, child, actor):
                             raise Gap("blocking label is not policy-owned; retaining it")
                         if api.main() != main_sha or api.pr(child.number) != child:
-                            raise Gap("identities changed before removing obsolete stack label")
+                            raise RaceGap("identities changed before removing obsolete stack label")
                         mutation_started = True
                         api.call(f"issues/{child.number}/labels/{BLOCK_LABEL}", "DELETE")
                         emit(pr=child.number, mutation="obsolete blocking label removed")
-            except BudgetGap:
-                raise
+                success = True
+            except BudgetGap as error:
+                if not progress:
+                    raise
+                failures += int(mutation_started or not progress.completed)
+                progress.finish(child.number, False, retry_soon=True, first=progress.completed > 0)
+                progress.save(args.state_out)
+                emit(pr=child.number, deferred=True, gap=str(error))
+                break
             except Exception as e:
                 unknowns += 1
+                retry_first = isinstance(e, RaceGap)
+                retry_soon = (retry_first
+                              or child.number in source.failed_fetches
+                              or (isinstance(e, HTTPError) and e.code >= 500)
+                              or (isinstance(e, (URLError, TimeoutError, subprocess.TimeoutExpired))
+                                  and not isinstance(e, HTTPError)))
                 failures += int(mutation_started)
                 emit(pr=child.number, head=child.head, main=main_sha, classification="unknown", gap=str(e))
+            if progress:
+                progress.finish(child.number, success, retry_soon, retry_first)
+                progress.save(args.state_out)
+        if progress:
+            emit(batch_summary=True, covered_through=progress.state["watermark"],
+                 pending=len(progress.state["pending"]), completed=progress.completed,
+                 retry_on_change_or_sweep=len(progress.state["failed"]),
+                 oldest_pending_update=min((progress.identities[n][1]
+                                            for n in progress.state["pending"]), default=None))
         emit(summary=True, selected=len(selected), failures=failures, unknowns=unknowns, api_calls=api.calls,
              api_bytes=api.bytes, git_operations=source.calls,
              elapsed_seconds=round(time.monotonic() - source.started, 3), mode="apply" if args.apply else "dry-run")
