@@ -1171,10 +1171,29 @@ class IntegrationContractTests(unittest.TestCase):
         self.assertTrue(events["workflow_dispatch"]["inputs"]["dry-run"]["default"])
         job = workflow["jobs"]["enforce"]
         self.assertNotIn("queue", workflow["concurrency"])
-        self.assertIn("github.event.pull_request.number", workflow["concurrency"]["group"])
-        self.assertIn("head_repository.id", workflow["concurrency"]["group"])
-        self.assertIn("head_branch", workflow["concurrency"]["group"])
-        self.assertIn("github.run_id", workflow["concurrency"]["group"])
+        group = workflow["concurrency"]["group"]
+        if "no-stack-automatic-batch" in group:
+            self.assertIn("github.event_name == 'workflow_run'", group)
+            self.assertIn("github.event_name == 'pull_request_target'", group)
+            self.assertIn("vars.NO_STACK_APPLY == 'true'", group)
+            self.assertIn("github.event.changes.base != null", group)
+            self.assertIn("github.run_id", group)
+            restore = next(step for step in job["steps"]
+                           if step.get("name") == "Restore latest trusted batch progress")
+            self.assertIn("stack-policy-progress", restore["run"])
+            self.assertIn('.path == ".github/workflows/stack-policy.yml"', restore["run"])
+            self.assertIn(".head_branch == \"main\"", restore["run"])
+            checkpoint = next(step for step in job["steps"]
+                              if step.get("name") == "Save batch progress")
+            self.assertEqual(checkpoint["with"]["if-no-files-found"], "error")
+            self.assertIn("BATCH_ENABLED", checkpoint["if"])
+            self.assertIn("always()", checkpoint["if"])
+        else:
+            # The prerequisite tools release still supports the deployed focused workflow.
+            self.assertIn("github.event.pull_request.number", group)
+            self.assertIn("head_repository.id", group)
+            self.assertIn("head_branch", group)
+            self.assertIn("github.run_id", group)
         self.assertEqual(job["concurrency"], {"group": "tauceti-no-stacking",
                                            "queue": "max", "cancel-in-progress": False})
         self.assertFalse(workflow["concurrency"]["cancel-in-progress"])

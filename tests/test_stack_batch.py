@@ -237,3 +237,19 @@ class BatchIntegration(fixtures.MainTests):
     def test_single_pr_canary_rejects_batch_scope(self):
         with self.assertRaisesRegex(sp.Gap, 'focused canary'):
             self.batch('--pr', '2', '--apply')
+
+    def test_network_failure_is_pending_for_next_wake(self):
+        from urllib.error import HTTPError
+        self.detector.detect = lambda p: (_ for _ in ()).throw(
+            HTTPError('https://api.github.com', 503, 'unavailable', {}, None))
+        self.assertFalse(self.batch())
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state['pending'], [1, 2])
+        self.assertEqual(state['failed'], {})
+
+    def test_preexisting_output_does_not_hide_zero_progress_failure(self):
+        self.state.write_text('{"old":true}')
+        with patch.object(self.api, 'pages', side_effect=sp.BudgetGap('no quota')):
+            with self.assertRaises(sp.BudgetGap):
+                self.batch()
+        self.assertEqual(json.loads(self.state.read_text()), {'old': True})

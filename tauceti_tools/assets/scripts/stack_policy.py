@@ -21,7 +21,7 @@ import sys
 import tempfile
 import time
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 
 
 REPO = "TauCetiProject/TauCeti"
@@ -1050,7 +1050,10 @@ def audit(args):
                 break
             except Exception as e:
                 unknowns += 1
-                retry_soon = isinstance(e, RaceGap)
+                retry_soon = (isinstance(e, RaceGap)
+                              or (isinstance(e, HTTPError) and e.code >= 500)
+                              or (isinstance(e, (URLError, TimeoutError, subprocess.TimeoutExpired))
+                                  and not isinstance(e, HTTPError)))
                 failures += int(mutation_started)
                 emit(pr=child.number, head=child.head, main=main_sha, classification="unknown", gap=str(e))
             if progress:
