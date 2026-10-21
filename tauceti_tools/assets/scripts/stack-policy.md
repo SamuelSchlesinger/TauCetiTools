@@ -136,26 +136,28 @@ not a proved-safe result. Undetected forms include:
 - Repository-owned heads with a bors merged-title marker: confirmed stacks are
   blocked/explained but closure declines because the existing branch deleter
   could otherwise delete the branch.
-- Non-main wakes without a verified association/current repository-and-branch
-  match, and events rejected by GitHub's 100-job concurrency limit. A full queue
-  also rejects new schedule/manual arrivals; reconciliation needs a backlog job
-  that is actually admitted and completes.
+- Missing source identities and incomplete metadata. Incremental batches retain
+  unknown identities for retry on change, a new event, or a recovery sweep; they
+  never interpret incomplete observation as proof that a PR is safe.
 
 An unmerged module dependency without inherited source is not closure evidence.
 Normal build gates and the worker rule to wait for prerequisites still apply.
 
 ## Enforcement, races and retries
 
-Main-target opened/reopened/edited/synchronize/draft events invoke trusted main
-policy. Other bases use an unprivileged wake followed by a main-defined observer.
-Events inspect only the triggering current PR against the parent index; they do
-not initiate a backlog sweep. Out-of-order wake completions recompute current
-branch heads. Missing identities are unknown; a target absent from a complete
-open index is superseded without mutation. Hourly/manual sweeps inspect backlog.
+Main-target source/base/draft events invoke trusted main policy. Other bases use
+an unprivileged wake followed by a main-defined observer. A focused invocation
+inspects its selected current PR against the full parent index. A checkpointed
+batch additionally covers changed and unfinished PRs from other notifications.
+Out-of-order or stale wakes cannot substitute an old head for current metadata.
+A target absent from the complete open index can be retired without mutation.
+Hourly/manual full sweeps re-evaluate unchanged identities too.
 
-Workflow groups coalesce events per PR/fork branch, while backlog groups are
-unique. One job-level FIFO mutation lock uses `queue: max`, up to 100 entries.
-Cancellations are visible and do not constitute coverage. All runs publish JSONL
+The batching workflow coalesces automatic wakes globally, keeping the active run
+and newest waiting wake. Explicit requests and scheduled sweeps remain distinct;
+one job-level FIFO mutation lock serializes all writes. Cancelled waiting wakes
+are not coverage: the next batch must rediscover their changed PR identities.
+All runs publish JSONL
 in logs, a job summary and a retained artifact. `NO_STACK_APPLY=true` enables
 automatic checks/enforcement. Otherwise automatic jobs skip and manual audits
 remain available. Manual dispatch defaults to dry-run; `dispatch` allows only a
@@ -207,32 +209,41 @@ closure, preserved branch and observed admitted-child withdrawal verification.
 source preparation. Without checkpoint arguments, the focused/backlog interface
 continues to support the deployed caller during rollout.
 
-Checkpoint version 1 contains a UTC `watermark`, ordered `pending` PR numbers,
-and `checked` identities (head SHA, observed updated time and base ref). Each
-batch enumerates the same complete bounded open-PR index needed by the detector,
-selects updates since the watermark with a two-minute overlap, adds current
-event targets, and resumes unfinished work first. The comparison index still
-includes other open PRs and the bounded recent-closed parents. A matching checked
-identity suppresses repeated overlap work; no checkpoint grants closure authority.
-Fresh checks immediately before mutations remain mandatory.
+Checkpoint version 1 contains a reporting `watermark`, ordered `pending` PR
+numbers, `checked` and `failed` identities (head SHA, updated time and base ref),
+and a mode and policy-source hash. Each batch enumerates the same complete
+bounded open-PR index needed by the detector. Every new or changed identity is
+selected, regardless of its timestamp, unless that exact identity is a retained
+unknown awaiting a new event or sweep. This avoids dropping a PR skipped during
+changing API pagination or delayed reads. Event targets are selected explicitly.
+New work alternates with unfinished work so both receive service. The comparison
+index includes other open PRs and bounded recent-closed parents. Checkpoints grant
+no closure authority; fresh checks before every mutation remain mandatory.
 
-Missing, invalid or expired state recovers by selecting every current open PR.
-An explicit `--sweep` also adds all current PRs, retaining unfinished work at the
-front. Closed targets disappear only after the complete open index is obtained.
-The boundary advances to the batch start only with all discovered work recorded
-as pending. Failed children rotate behind unvisited work, including on global
-budget exhaustion; no retry count drops them. Already completed children are
-saved after each inspection. A retry can repeat work if a runner dies before
-publication, but cannot rely on an unpublished boundary to skip work.
+Missing, invalid or expired artifacts recover by selecting every current open PR.
+A different dry-run/apply mode or policy-source hash also requests recovery.
+`--sweep`, or a schedule/manual-backlog invocation with no focused targets, adds
+all current PRs including unchanged unknowns. Scheduled recovery resumes retained
+work rather than restarting at the first child. Closed targets are retired after
+the complete open index is obtained; if one temporarily disappears during paging,
+its unrecorded identity is rediscovered when it next appears.
 
-The trusted workflow must publish the output checkpoint even on failure, then
-restore the latest published artifact from this exact main-defined workflow.
-Artifact publication commits progress; if it fails the old artifact remains the
-boundary. Do not use a cancelled-run listing as the checkpoint index. Budget
-exhaustion after saving discovered work is expected deferral, reported with a
-pending count rather than a policy failure. A budget failure during a mutation
-remains a failed run. Unexpected failures and persistence errors remain visible.
-Dry-run/manual focused invocations must not publish apply-mode checkpoints.
+Unvisited work and identity races remain `pending`. Source/metadata gaps and child
+cost limits are retained in `failed`, retried on identity change, a new explicit
+event, or a sweep. No retry count drops coverage. This prevents one permanently
+ambiguous or expensive child occupying every batch. Finished inspections are
+saved individually. A runner loss before artifact publication can repeat work.
+
+Restore and publish inside the job holding the shared mutation lock. Publish only
+the output checkpoint file, including on failure; restore the latest artifact
+from this exact trusted main-defined workflow. Artifact publication commits
+progress; a failed publication leaves the old artifact authoritative. Discover
+artifacts directly because cancelled pending runs do not have useful state.
+Budget exhaustion is successful deferral only after the current invocation saved
+its own state and completed a child. Zero-progress and mutation-time budget
+failures remain red, as do unexpected execution and persistence failures.
+Dry-run and focused manual invocations must not publish apply-mode checkpoints;
+`--pr` rejects combination with `--state-out` to protect one-PR canaries.
 
 Automatic wakes can then coalesce globally: one running batch and the newest
 waiting wake cover all metadata updates, including notifications replaced before
@@ -241,7 +252,7 @@ and all policy mutations under the same global lock. Full recovery sweeps share
 this checkpoint so continuation does not restart at the first PR. No extra merge
 gate or fixed debounce is needed.
 
-For local regression tests run `python3 -m unittest discover -s tests -p
- test_stack_batch.py` in TauCetiTools. Coverage includes collapsed notifications,
+For local regression tests in TauCetiTools run
+`python3 -m unittest discover -s tests -p test_stack_batch.py`. Coverage includes collapsed notifications,
 latest identities, interruption and publication failure, shared source setup,
 fair continuation, stale fork wakes and read-only execution.

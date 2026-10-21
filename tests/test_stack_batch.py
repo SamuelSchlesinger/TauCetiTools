@@ -1,5 +1,4 @@
 """Checkpoint coverage and real checker integration, without network or policy writes."""
-import copy
 import io
 import json
 from pathlib import Path
@@ -55,7 +54,7 @@ class ProgressTests(unittest.TestCase):
 
     def test_budget_and_failed_children_rotate_behind_unvisited_work(self):
         b = self.batch()
-        b.finish(1, False)
+        b.finish(1, False, retry_soon=True)
         b.finish(2, True)
         b.save(self.path)
         self.assertEqual(self.batch().state['pending'], [3, 4, 5, 6, 7, 8, 1])
@@ -83,10 +82,36 @@ class ProgressTests(unittest.TestCase):
         b = self.batch(); b.finish(1, True); b.save(self.path)
         self.rows.append(dict(number=9, head={'sha': 'a' * 40}, base={'ref': 'parent'},
                               updated_at=b.started))
-        self.assertEqual(self.batch([9]).state['pending'], [2, 3, 4, 5, 6, 7, 8, 9])
+        self.assertEqual(self.batch([9]).state['pending'], [9, 2, 3, 4, 5, 6, 7, 8])
+
+    def test_pagination_skip_returns_even_when_update_is_older_than_watermark(self):
+        b = self.batch()
+        b.save(self.path)
+        missing = self.rows.pop(0)
+        self.drain(self.batch())
+        self.rows.insert(0, missing)
+        self.assertEqual(self.batch().state['pending'], [1])
+
+    def test_unchanged_unknown_is_retained_and_retried_on_change_or_sweep(self):
+        b = self.batch(); b.finish(1, False)
+        self.drain(b)
+        self.assertEqual(self.batch().state['pending'], [])
+        self.assertIn(1, self.batch(sweep=True).state['pending'])
+        self.rows[0]['head']['sha'] = 'e' * 40
+        self.assertEqual(self.batch().state['pending'], [1])
+
+    def test_dry_checkpoint_and_policy_change_request_recovery(self):
+        self.drain(self.batch())
+        self.assertEqual(sp.BatchProgress(self.path, self.rows, set(), apply=True).state['pending'],
+                         list(range(1, 9)))
+        state = json.loads(self.path.read_text()); state['policy'] = 'changed'
+        self.path.write_text(json.dumps(state))
+        self.assertEqual(self.batch().state['pending'], list(range(1, 9)))
+
 
 
 class BatchIntegration(fixtures.MainTests):
+    # Re-run the legacy main-interface cases alongside new batch integration cases.
     def setUp(self):
         super().setUp()
         self.tmp = tempfile.TemporaryDirectory()
@@ -116,7 +141,7 @@ class BatchIntegration(fixtures.MainTests):
         def fail(p):
             raise sp.BudgetGap('quota exhausted')
         self.detector.detect = fail
-        self.assertFalse(self.batch())
+        self.assertTrue(self.batch())  # No progress must remain visible as a failure.
         self.assertEqual(json.loads(self.state.read_text())['pending'], [2, 1])
         visited = []
         self.detector.detect = lambda p: (visited.append(p.number) or None, [])
@@ -130,7 +155,8 @@ class BatchIntegration(fixtures.MainTests):
                 raise sp.BudgetGap('preparation limit')
             return original(path, *args, **kwargs)
         with patch.object(self.api, 'call', side_effect=stop):
-            self.assertFalse(self.batch())
+            with self.assertRaises(sp.BudgetGap):
+                self.batch()
         self.assertEqual(json.loads(self.state.read_text())['pending'], [1, 2])
 
     def test_per_pr_gap_does_not_starve_unrelated_child(self):
@@ -140,7 +166,9 @@ class BatchIntegration(fixtures.MainTests):
             return None, []
         self.detector.detect = detect
         self.assertFalse(self.batch())
-        self.assertEqual(json.loads(self.state.read_text())['pending'], [1])
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state['pending'], [])
+        self.assertIn('1', state['failed'])
 
     def test_multiple_explicit_prs_reuse_one_preparation(self):
         visited = []
@@ -159,3 +187,53 @@ class BatchIntegration(fixtures.MainTests):
         self.detector.detect = lambda p: (self.evidence if p.number == 2 else None, [])
         self.assertFalse(self.batch())
         self.assertEqual(self.api.calls, [])
+
+    def test_schedule_rechecks_all_unchanged_children(self):
+        self.assertFalse(self.batch())
+        visited = []
+        self.detector.detect = lambda p: (visited.append(p.number) or None, [])
+        self.assertFalse(self.batch())
+        self.assertEqual(visited, [1, 2])
+
+    def test_deleted_fork_only_batch_reports_gap_without_failing(self):
+        self.raw = [self.raw[1]]
+        self.raw[0]['head']['repo'] = None
+        self.assertFalse(self.batch())
+        self.assertIn('2', json.loads(self.state.read_text())['failed'])
+
+    def test_apply_batch_closes_only_after_existing_checks(self):
+        self.detector.detect = lambda p: (self.evidence if p.number == 2 else None, [])
+        self.assertFalse(self.batch('--apply'))
+        self.assertTrue(any(path == 'pulls/2' and method == 'PATCH'
+                            for path, method, _ in self.api.calls))
+
+    def test_mutation_budget_remains_failure_and_pending(self):
+        self.detector.detect = lambda p: (self.evidence if p.number == 2 else None, [])
+        original = self.api.call
+        def stop(path, method='GET', data=None):
+            if path == 'issues/2/labels' and method == 'POST':
+                raise sp.BudgetGap('quota during mutation')
+            return original(path, method, data)
+        with patch.object(self.api, 'call', side_effect=stop):
+            self.assertTrue(self.batch('--apply'))
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [2])
+
+    def test_progress_before_budget_defers_successfully(self):
+        def detect(p):
+            if p.number == 2:
+                raise sp.BudgetGap('quota')
+            return None, []
+        self.detector.detect = detect
+        self.assertFalse(self.batch())
+        self.assertEqual(json.loads(self.state.read_text())['pending'], [2])
+
+    def test_identity_race_remains_pending_instead_of_waiting_for_hourly_sweep(self):
+        self.detector.detect = lambda p: (_ for _ in ()).throw(sp.RaceGap('main advanced'))
+        self.assertFalse(self.batch())
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state['pending'], [1, 2])
+        self.assertEqual(state['failed'], {})
+
+    def test_single_pr_canary_rejects_batch_scope(self):
+        with self.assertRaisesRegex(sp.Gap, 'focused canary'):
+            self.batch('--pr', '2', '--apply')
