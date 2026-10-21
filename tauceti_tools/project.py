@@ -234,6 +234,18 @@ def _validate(raw: dict, source: str) -> Project:
     for key, value in _table(raw, "roadmap").items():
         if key.endswith("_dir"):
             _path(value, f"roadmap.{key}")
+    authoring_conf = _table(raw, "roadmap").get("authoring_conf_url")
+    if authoring_conf is not None:
+        if not isinstance(authoring_conf, str):
+            raise ConfigError("roadmap.authoring_conf_url must be an HTTPS URL without credentials")
+        try:
+            url = urllib.parse.urlsplit(authoring_conf)
+            valid = (url.scheme == "https" and url.hostname and not url.username and not url.password
+                     and not any(c.isspace() for c in authoring_conf))
+        except ValueError:
+            valid = False
+        if not valid:
+            raise ConfigError("roadmap.authoring_conf_url must be an HTTPS URL without credentials")
     for name, value in _table(raw, "tools").items():
         if not isinstance(value, dict):
             raise ConfigError(f"tools.{name} must have repo and ref fields")

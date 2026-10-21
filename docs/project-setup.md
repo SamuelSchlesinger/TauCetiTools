@@ -1,5 +1,8 @@
 # Tau Ceti project architecture and manual setup
 
+Up to date as of **2026-10-21**. Roadmap authoring is an optional work in progress;
+recheck its upstream guides when updating this manual, and advance this date after review.
+
 This document describes a project using the shared Tau Ceti workflow. Commands below use
 `ExampleOrg/ExampleCeti`. Substitute the organization, project name and human owner once
 when preparing an installation. Each project has its own repositories, configuration,
@@ -9,8 +12,8 @@ credentials and merge authority. An organization can contain several projects.
 
 The content repository holds Lean source and reproducible dependency pins. Human-owned
 configuration defines the source paths agents may edit, the dependencies, review policy and
-required checks. The roadmap repository supplies the mathematical targets; it is maintained
-by humans, even where a human uses an assistant to draft text.
+required checks. The roadmap repository supplies the mathematical targets. Humans review and
+merge changes to those targets; optional roadmap authoring workers can prepare drafts.
 
 The example worker selects work and runs the operator's agent subscriptions. It authenticates
 as that operator, authors through a fork and opens PRs against the content repository's default
@@ -570,6 +573,67 @@ For progress, extend the existing automation App installation to the roadmap rep
 repositories**, add the roadmap alongside content, then **Save**. Upload the existing key as
 the roadmap's `SYNC_BOT_APP_PRIVATE_KEY`, and set its `SYNC_BOT_APP_ID` variable to that App's
 numeric ID. A second automation App is unnecessary.
+
+### Roadmap authoring (WIP)
+
+[TauCetiRoadmapWorker](https://github.com/TauCetiProject/TauCetiRoadmapWorker) automates
+roadmap planning and authoring: humans file targets, agents prepare designs and packages,
+independent agents review them, and accepted packages become draft PRs in the roadmap
+repository. Humans review and merge those final PRs. Its job board is
+[TauCetiRoadmapJobs](https://github.com/TauCetiProject/TauCetiRoadmapJobs).
+This is an **optional extra, still under development**, introduced in the
+[downstream setup discussion](https://leanprover.zulipchat.com/#narrow/channel/638283-Tau-Ceti-scientific-advisory-board/topic/Tau.20Ceti.20downstreams/near/633525014).
+Existing human-authored roadmaps need none of this. It is separate from Progress, which reports
+implementation progress rather than authoring targets.
+
+For a downstream, prepare your own job board, for example
+`ExampleOrg/ExampleCetiRoadmapJobs`, using the worker's current
+[operator and maintainer guide](https://github.com/TauCetiProject/TauCetiRoadmapWorker/blob/main/docs/OPERATORS.md).
+Use its
+[configuration example](https://github.com/TauCetiProject/TauCetiRoadmapWorker/blob/main/tauceti-roadmap.toml.example)
+to create a separate, human-owned `tauceti-roadmap.toml`. In that file:
+
+- Set `repositories.content = "ExampleOrg/ExampleCetiRoadmap"` (the roadmap repository)
+  and `repositories.library = "ExampleOrg/ExampleCeti"` (the Lean library).
+- Set `repositories.board` to your job board. Choose your own packages repository and claims
+  namespace, or use the documented board/fork defaults. Do not inherit Tau Ceti's destinations.
+- Match the roadmap paths and default branch to your roadmap repository. Choose authorized
+  target filers, operators and independent reviewers, and keep `roadmap.open_as_draft = true`
+  and `redteam.ready_after = false` for human review.
+- Protect the configuration, prompts and merge order with human CODEOWNERS. Configure board
+  maintenance (`board sync`, `board intake`, `board stale`) using the current maintainer guide;
+  running an authoring worker alone does not advance the board.
+
+Publish that configuration on the job board's default branch. In the content project's
+`tauceti.toml`, add the URL to the existing `[roadmap]` table and enable the feature in the
+existing `[features]` table (do not duplicate those tables):
+
+```toml
+[roadmap]
+# Keep existing active_dir and completed_dir settings.
+authoring_conf_url = "https://raw.githubusercontent.com/ExampleOrg/ExampleCetiRoadmapJobs/main/tauceti-roadmap.toml"
+
+[features]
+# Keep existing feature choices.
+roadmap_authoring = true
+```
+
+On each operator host, authenticate `gh` and the chosen agent CLI, then install and check:
+
+```sh
+uv tool install git+https://github.com/TauCetiProject/TauCetiRoadmapWorker
+tauceti-roadmap --conf https://raw.githubusercontent.com/ExampleOrg/ExampleCetiRoadmapJobs/main/tauceti-roadmap.toml doctor
+```
+
+The roadmap worker's own `doctor` checks its host tools, repository access, claims, state,
+sources cache, PDF extraction/OCR and sandbox. Follow its current guide for Lean package
+caches and source access; downloaded texts stay in the operator's local cache.
+`tauceti-tools doctor --check features.roadmap_authoring` prints this handoff and the configured
+command. It leaves enabled authoring **pending**, since it does not run the dedicated doctor
+or establish runtime health. It installs nothing and starts no workers or maintenance.
+`--no-extras` omits the check; `features.roadmap_authoring = false` (the default) disables it.
+The configuration and procedures are WIP: consult the linked upstream guides during upgrades
+and revise this section as the integration develops.
 
 ### Announcements
 

@@ -713,7 +713,7 @@ def dependency_findings(project, gh, again):
 def extra_findings(project, gh, again):
     from .github_state_setup import client_token_file, public_configuration
 
-    results = []
+    results = [roadmap_authoring_finding(project, again)]
     owner = project.content.split("/")[0]
     for name in ("github_state", "bors", "cache"):
         service = project.service(name)
@@ -1079,6 +1079,35 @@ def extra_findings(project, gh, again):
     return results
 
 
+def roadmap_authoring_finding(project, again):
+    """Hand WIP authoring checks to its own doctor without running another tool."""
+    enabled = project.feature("roadmap_authoring")
+    conf = project.raw.get("roadmap", {}).get("authoring_conf_url")
+    worker = "https://github.com/TauCetiProject/TauCetiRoadmapWorker"
+    return Finding(
+        "features.roadmap_authoring",
+        "disabled" if not enabled else "pending" if conf else "failed",
+        "Roadmap authoring (WIP): off" if not enabled else (
+            "Roadmap authoring (WIP): run the dedicated doctor; runtime health is not checked here"
+            if conf else "Roadmap authoring (WIP): roadmap.authoring_conf_url is not configured"
+        ),
+        "Optional roadmap planning, independent review and draft PRs; humans merge final roadmaps",
+        commands=([_cmd("uv", "tool", "install", "git+" + worker),
+                   _cmd("tauceti-roadmap", "--conf", conf, "doctor")] if enabled and conf else []),
+        urls=[worker, worker + "/blob/main/docs/OPERATORS.md",
+              "https://github.com/TauCetiProject/TauCetiRoadmapJobs"],
+        steps=[
+            "This optional extra is work in progress. Leave features.roadmap_authoring = false to omit setup; existing human-authored roadmaps continue to work.",
+            f"Follow the worker's current operator guide to prepare a downstream-owned job board and its maintenance. Copy tauceti-roadmap.toml.example from TauCetiRoadmapWorker: set repositories.content to {project.repos['roadmap']}, repositories.library to {project.content}, and board/packages/claims, target filers and operators to this downstream's own choices. Keep the final roadmap PRs as drafts for human review and merging.",
+            f"Protect and publish that separate configuration, then set roadmap.authoring_conf_url in {project.source} to its raw HTTPS URL and features.roadmap_authoring = true. This tauceti.toml is not a tauceti-roadmap.toml. Do not use Tau Ceti's job board or claims namespace for a downstream.",
+            "Install the roadmap worker on each operator host and run its dedicated doctor with that URL. It checks agent tools, GitHub access, claims, local state, source extraction/OCR and sandbox settings. This setup doctor only prints the handoff; it does not install tools, run agents or start board maintenance. Recheck the upstream guide when upgrading this WIP integration.",
+        ],
+        verify=(_cmd("tauceti-roadmap", "--conf", conf, "doctor") if enabled and conf else again),
+        section="roadmap-authoring-wip",
+        optional=True,
+    )
+
+
 def auxiliary_findings(project, gh, again):
     from .credentials import app_setup, credential_setup
 
@@ -1227,6 +1256,7 @@ def _label(check):
         "features.zulip": "Zulip announcements",
         "features.fleet": "Runner fleet",
         "features.security_audit": "Security audit",
+        "features.roadmap_authoring": "Roadmap authoring (WIP)",
         "secrets.APP_ID": "Automation App credentials",
         "secrets.APP_PRIVATE_KEY": "Automation App credentials",
         "evidence.pr-build": "Content build",

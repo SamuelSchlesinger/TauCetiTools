@@ -176,6 +176,59 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(finding.status, "failed")
         self.assertIn("Run 2 failed", finding.summary)
 
+    def test_roadmap_authoring_is_optional_and_omitted_from_core_checks(self):
+        class Unavailable:
+            def read(self, path, **kwargs):
+                return None, "GitHub HTTP 404"
+
+        project = parse(initial_configuration("one/Project", "human").encode(), "/tmp/tauceti.toml")
+        with patch("subprocess.run") as run:
+            findings = diagnose(project, github=Unavailable())
+            authoring = next(f for f in findings if f.id == "features.roadmap_authoring")
+            self.assertEqual(authoring.status, "disabled")
+            self.assertTrue(authoring.optional)
+            self.assertFalse(any(f.id == authoring.id for f in diagnose(project, extras=False, github=Unavailable())))
+            run.assert_not_called()
+        self.assertTrue(authoring.json()["manual"].endswith("#roadmap-authoring-wip"))
+
+    def test_roadmap_authoring_hands_off_without_running_or_claiming_health(self):
+        from tauceti_tools.doctor import roadmap_authoring_finding, render
+
+        project = parse(initial_configuration("one/Project", "human").encode(), "/tmp/tauceti.toml")
+        project.raw["features"]["roadmap_authoring"] = True
+        missing = roadmap_authoring_finding(project, "doctor")
+        self.assertEqual(missing.status, "failed")
+        self.assertIn("roadmap.authoring_conf_url", missing.summary)
+        url = "https://raw.githubusercontent.com/one/ProjectRoadmapJobs/main/tauceti-roadmap.toml"
+        project.raw["roadmap"]["authoring_conf_url"] = url
+        with patch("subprocess.run") as run:
+            finding = roadmap_authoring_finding(project, "doctor")
+            run.assert_not_called()
+        self.assertTrue(finding.optional)
+        self.assertEqual(finding.status, "pending")
+        self.assertEqual(finding.verify, f"tauceti-roadmap --conf {url} doctor")
+        self.assertIn(finding.verify, finding.commands)
+        self.assertIn("one/ProjectRoadmap", " ".join(finding.steps))
+        self.assertIn("repositories.library to one/Project", " ".join(finding.steps))
+        self.assertNotIn("TauCetiProject/TauCetiRoadmapJobs", finding.verify)
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            render([finding], project=project)
+        self.assertIn("optional extras", output.getvalue())
+        self.assertIn("Roadmap authoring (WIP)", output.getvalue())
+        self.assertIn(finding.verify, output.getvalue())
+
+    def test_roadmap_authoring_config_url_is_public_https(self):
+        text = initial_configuration("one/Project", "human")
+        for value in ('"http://example.org/config"', '"https://token@example.org/config"',
+                      '"./tauceti-roadmap.toml"', '"https://example.org/config with spaces"',
+                      '"https://[invalid/config"', "42"):
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                parse(text.replace('[roadmap]', '[roadmap]\nauthoring_conf_url = ' + value).encode())
+        url = "https://example.org/tauceti-roadmap.toml"
+        project = parse(text.replace('[roadmap]', f'[roadmap]\nauthoring_conf_url = "{url}"').encode())
+        self.assertEqual(project.raw["roadmap"]["authoring_conf_url"], url)
+
     def test_recorded_neon_grant_does_not_claim_runtime_is_ready(self):
         from tauceti_tools.doctor import extra_findings
 
