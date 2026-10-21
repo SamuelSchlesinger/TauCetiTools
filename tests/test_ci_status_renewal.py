@@ -82,6 +82,26 @@ class Renewal(unittest.TestCase):
         for value in ("old-token", "renewed-token", "private-key"):
             self.assertNotIn(value, output.getvalue())
 
+    def test_status_history_uses_and_renews_status_token_not_optional_read_token(self):
+        path = "repos/o/r/commits/" + "a" * 40 + "/statuses?per_page=100"
+        with patch.dict(os.environ, GH_TOKEN="expired-status-token", GH_READ_TOKEN="read-without-statuses",
+                        CI_STATUS_APP_ID="12", CI_STATUS_APP_PRIVATE_KEY="private-key"), \
+             patch.object(app, "status_token", return_value="renewed-status-token") as renew, \
+             patch.object(api.subprocess, "run", side_effect=[reply(401), reply(200, [])]) as request, \
+             patch.object(api.time, "sleep"), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(api.GitHub(max_wait=0).request("GET", path, read=False, conditional=True), [])
+        renew.assert_called_once()
+        self.assertEqual(request.call_args.kwargs["env"]["GH_TOKEN"], "renewed-status-token")
+        self.assertNotIn("CI_STATUS_APP_PRIVATE_KEY", request.call_args.kwargs["env"])
+        with patch.dict(os.environ, GH_TOKEN="status-token", GH_READ_TOKEN="read-without-statuses",
+                        CI_STATUS_APP_ID="12", CI_STATUS_APP_PRIVATE_KEY="private-key"), \
+             patch.object(app, "status_token") as renew, \
+             patch.object(api.subprocess, "run", return_value=reply(401)) as request, \
+             contextlib.redirect_stderr(io.StringIO()), self.assertRaises(api.APIError):
+            api.GitHub(max_wait=0).request("GET", path, read=True)
+        renew.assert_not_called()
+        self.assertEqual(request.call_args.kwargs["env"]["GH_TOKEN"], "read-without-statuses")
+
     def test_no_renewal_on_unrelated_endpoints_or_permissions_failures(self):
         for method, path, status in [("GET", "repos/o/r/pulls/1", 401),
                                      ("POST", "repos/o/r/issues/1/comments", 401),
@@ -112,13 +132,13 @@ class FinalizerStaleness(unittest.TestCase):
         now = [0]
         def sleep(delay): now[0] += delay
         deferred = api.Deferred("ci-status-app", 1060)
-        with patch.object(finalizer, "api", side_effect=[dict(run_attempt=2), deferred, dict(run_attempt=3)]) as request, \
+        with patch.object(finalizer, "api", side_effect=[dict(run_attempt=2), [], deferred, dict(run_attempt=3)]) as request, \
              patch.object(finalizer.time, "monotonic", side_effect=lambda: now[0]), \
              patch.object(finalizer.time, "time", side_effect=lambda: 1000 + now[0]), \
              patch.object(finalizer.time, "sleep", side_effect=sleep), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(finalizer.publish(self.intent()), 1)
         self.assertEqual(now[0], 60)
-        self.assertEqual(request.call_count, 3)
+        self.assertEqual(request.call_count, 4)
         self.assertEqual(sum(call.args[0].startswith("/statuses/") for call in request.call_args_list), 1)
 
     def test_changed_bors_generation_during_quota_wait_is_revalidated(self):
@@ -126,7 +146,7 @@ class FinalizerStaleness(unittest.TestCase):
         def sleep(delay): now[0] += delay
         deferred = api.Deferred("ci-status-app", 1060)
         intent = dict(self.intent(), bors=dict(batch_id=7, base_ref="main", base_sha="b" * 40))
-        with patch.object(finalizer, "api", side_effect=[dict(run_attempt=2), deferred, dict(run_attempt=2)]) as request, \
+        with patch.object(finalizer, "api", side_effect=[dict(run_attempt=2), [], deferred, dict(run_attempt=2), []]) as request, \
              patch.object(finalizer, "observation", return_value={}), \
              patch.object(finalizer, "candidate_ref", side_effect=["staging-ref", ValueError("obsolete")]) as candidate, \
              patch.object(finalizer.time, "monotonic", side_effect=lambda: now[0]), \

@@ -5,8 +5,10 @@ Executed only from the immutable workflow checkout. The finalizer starts beside
 the publisher after the full sandbox audit; it never consumes candidate files.
 """
 import argparse
+import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -38,9 +40,14 @@ def api(path, payload=None):
     if _client is None:
         # Publication owns waits so it can revalidate the run after sleeping.
         _client = GitHub(max_wait=0, jitter=2)
+    options = {}
+    if re.fullmatch(r"/commits/[0-9a-f]{40}/statuses\?per_page=100", path):
+        # Commit-status evidence shares the renewable status credential; the
+        # read App has a separate quota and may expire during a long reset wait.
+        options["read"] = False
     return _client.request("GET" if payload is None else "POST", "repos/" + REPO + path,
                            payload, conditional=payload is None,
-                           idempotent=path.startswith("/statuses/"))
+                           idempotent=path.startswith("/statuses/"), **options)
 
 
 def publication_job(data):
@@ -211,7 +218,7 @@ def save_intent(intent, target):
         temporary.replace(destination)
 
 
-def finalize(env, target):
+def finalize(env, target, *, resume=False):
     save_intent(finalization_intent(env), target)
     deadline = time.monotonic() + post_retry_seconds()
     while True:
@@ -232,10 +239,41 @@ def finalize(env, target):
                    target_url=f"https://github.com/{REPO}/actions/runs/{env['GITHUB_RUN_ID']}")
     intent = status_intent(env, payload)
     save_intent(intent, target)
-    return publish(intent)
+    return publish(intent, target=target, resume=resume)
 
 
-def publish(intent):
+def newer_build_status(intent, attempt_started=None):
+    """One bounded newest-first read fences verdicts from later workflow runs."""
+    rows = api(f"/commits/{intent['revision']}/statuses?per_page=100")
+    if not isinstance(rows, list) or len(rows) > 100:
+        raise ValueError("invalid commit status observation")
+    pattern = re.compile(r"https://github\.com/" + re.escape(REPO) + r"/actions/runs/([1-9][0-9]*)")
+    for row in rows:
+        if not isinstance(row, dict) or row.get("context") != "build":
+            continue
+        target = row.get("target_url")
+        match = pattern.fullmatch(target) if isinstance(target, str) else None
+        # GitHub orders statuses newest first. Older rows are historical;
+        # only the current build verdict can supersede this publication.
+        if not match or int(match.group(1)) <= intent["run_id"]:
+            return False
+        # A rerun keeps its original run ID. A later-numbered run's status is
+        # obsolete if it predates this attempt, even though its ID is greater.
+        try:
+            created = dt.datetime.fromisoformat(row["created_at"].replace("Z", "+00:00"))
+            started = dt.datetime.fromisoformat(attempt_started.replace("Z", "+00:00"))
+            return created > started
+        except (KeyError, AttributeError, TypeError, ValueError):
+            return False
+    return False
+
+
+def discard_intent(target):
+    if target:
+        Path(target).unlink(missing_ok=True)
+
+
+def publish(intent, *, target=None, resume=False):
     """Retry only publication, preserving the completed result and attempt fence."""
     validate_intent(intent)
     if intent["schema"] != "tauceti-ci.status-intent/v1":
@@ -250,7 +288,12 @@ def publish(intent):
             latest = api(f"/actions/runs/{intent['run_id']}")
             if latest["run_attempt"] != intent["attempt"]:
                 print("::notice::superseded run attempt will not overwrite its successor's status", flush=True)
-                return 1
+                discard_intent(target)
+                return 0 if resume else 1
+            if newer_build_status(intent, latest.get("run_started_at")):
+                print("::notice::newer run already published build status; obsolete intent discarded", flush=True)
+                discard_intent(target)
+                return 0 if resume else 1
             if latest.get("conclusion") == "cancelled":
                 payload.update(state="failure", description="batch workflow was canceled; redispatch current batch")
             if payload["state"] == "success" and intent.get("bors"):
@@ -263,10 +306,12 @@ def publish(intent):
                                   batch_id=bors["batch_id"], branch=bors["base_ref"])
                 except (ValueError, KeyError, TypeError):
                     print("::notice::obsolete or unconfirmed bors generation will not publish success", flush=True)
-                    return 1
+                    discard_intent(target)
+                    return 0 if resume else 1
             api(f"/statuses/{revision}", payload)
+            discard_intent(target)
             print(f"Posted build={payload['state']} on {revision}: {payload['description']}", flush=True)
-            return 0 if payload["state"] == "success" else 1
+            return 0 if resume or payload["state"] == "success" else 1
         except Deferred as error:
             # Wait outside POST, then refresh the run fence: an attempt may
             # have been canceled or superseded during a long quota wait.
@@ -281,7 +326,9 @@ def publish(intent):
             if error.status and error.status < 500:
                 print(f"::error::terminal status rejected: {error}", file=sys.stderr)
                 return 1
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            # Token renewal can be temporarily unavailable. Preserve the intent
+            # and retry publication within the same finite deadline, not build.
             pass
         print("::warning::terminal status publication unavailable; retrying without rebuilding", flush=True)
         remaining = deadline - time.monotonic()
@@ -308,8 +355,8 @@ def main(argv=()):
         if intent["schema"] == "tauceti-ci.finalization-intent/v1":
             env = dict(intent["evidence"], STATUS_SHA=intent["revision"],
                        GITHUB_RUN_ID=str(intent["run_id"]), GITHUB_RUN_ATTEMPT=str(intent["attempt"]))
-            return finalize(env, str(path))
-        return publish(intent)
+            return finalize(env, str(path), resume=True)
+        return publish(intent, target=str(path), resume=True)
     env = os.environ
     revision = env.get("STATUS_SHA")
     if not sha(revision):

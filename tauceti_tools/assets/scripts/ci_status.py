@@ -151,7 +151,7 @@ def fence(api, record):
         if (not isinstance(pull, dict) or (pull.get("head") or {}).get("sha") != record["sha"]
                 or (pull.get("base") or {}).get("ref") != record["base_ref"]):
             return False
-    return True
+    return current
 
 
 def scope_approved(api, record):
@@ -167,9 +167,51 @@ def scope_approved(api, record):
         return bors_scope_approval.verify(
             bors_scope_approval.observation(approval.get("batch_id")), approval["head"], approval["base"],
             pr=approval.get("pr"), batch_id=approval.get("batch_id"), combined_paths=approval.get("paths"), api=read)
-    except (KeyError, TypeError, ValueError, OSError) as error:
+    except (KeyError, TypeError, ValueError) as error:
         print(f"ci-status: scope approval unavailable: {type(error).__name__}", file=sys.stderr)
         return False
+
+
+def status_snapshot(api, record):
+    path = f"repos/{record['repo']}/commits/{record['sha']}/statuses?per_page=100"
+    rows = api.request("GET", path, conditional=True, read=False)
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise APIError("GET", path, 503, {"message": "invalid commit status history"})
+    latest = {}
+    # GitHub returns newest first. Only the newest status for each exact context
+    # governs it; an older row from a newer run must not override that ordering.
+    for row in rows:
+        context = row.get("context")
+        if isinstance(context, str) and context in CONTEXTS and context not in latest:
+            latest[context] = row
+    return latest, len(rows) < 100
+
+
+def timestamp(value):
+    if not isinstance(value, str):
+        raise ValueError("missing status attempt timestamp")
+    parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp has no timezone")
+    return parsed
+
+
+def newer_status(record, snapshot, started_at):
+    latest, complete = snapshot
+    row = latest.get(record["payload"]["context"])
+    if row is None:
+        return False if complete else None
+    url = row.get("target_url")
+    pattern = rf"https://github\.com/{re.escape(record['repo'])}/actions/runs/([1-9][0-9]*)"
+    match = re.fullmatch(pattern, url) if isinstance(url, str) else None
+    if not match or int(match[1]) <= record["run_id"]:
+        return False
+    try:
+        # A lower-numbered run can have a later rerun. Its current attempt is
+        # allowed to replace statuses published before that attempt began.
+        return timestamp(row.get("created_at")) > timestamp(started_at)
+    except ValueError:
+        return None
 
 
 def binding(record):
@@ -181,7 +223,8 @@ def publish(records, *, max_wait=600):
     # or run attempt may have changed. Wait here, then refresh the identity fence.
     api = GitHub(max_wait=0)
     deadline = time.monotonic() + max_wait
-    fenced = set()
+    fenced = {}
+    statuses = {}
     failures = 0
     try:
         for path, record in records:
@@ -189,11 +232,23 @@ def publish(records, *, max_wait=600):
             for attempt in range(4):
                 try:
                     if key not in fenced:
-                        if not fence(api, record):
+                        current = fence(api, record)
+                        if not current:
                             print(f"ci-status: obsolete {record['payload']['context']} intent skipped")
                             path.unlink(missing_ok=True)
                             break
-                        fenced.add(key)
+                        fenced[key] = current.get("run_started_at")
+                    if key not in statuses:
+                        statuses[key] = status_snapshot(api, record)
+                    superseded = newer_status(record, statuses[key], fenced[key])
+                    if superseded is None:
+                        print(f"ci-status: recent history cannot establish {record['payload']['context']} ordering; retaining intent", file=sys.stderr)
+                        failures += 1
+                        break
+                    if superseded:
+                        print(f"ci-status: newer run already published {record['payload']['context']}; obsolete intent skipped")
+                        path.unlink(missing_ok=True)
+                        break
                     payload = record["payload"]
                     approval_ok = scope_approved(api, record)
                     if not approval_ok:
@@ -215,6 +270,9 @@ def publish(records, *, max_wait=600):
                         failures += 1
                         break
                     delay = 2 ** (attempt + 1)
+                except (OSError, RuntimeError) as error:
+                    print(f"ci-status: publication dependency unavailable: {type(error).__name__}", file=sys.stderr)
+                    delay = 2 ** (attempt + 1)
                 if attempt == 3 or time.monotonic() + delay > deadline:
                     print(f"ci-status: publication deferred; retaining {path.name}", file=sys.stderr)
                     failures += 1
@@ -223,6 +281,7 @@ def publish(records, *, max_wait=600):
                 print(f"ci-status: waiting until {reset}; will refresh run/PR identity before retry", flush=True)
                 time.sleep(delay)
                 fenced.clear()
+                statuses.clear()
         return failures == 0
     finally:
         api.report()
