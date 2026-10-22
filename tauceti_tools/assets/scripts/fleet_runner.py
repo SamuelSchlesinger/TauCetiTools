@@ -163,6 +163,8 @@ def shared_capacity(repository, token):
     if len(raw) > 4 * 1024 * 1024:
         raise ObservationError("capacity observation exceeds bound")
     value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ObservationError("invalid shared capacity response")
     now = time.time() * 1000
     def numeric(n):
         return type(n) in (int, float) and math.isfinite(n)
@@ -375,9 +377,10 @@ def route_main():
         observed = shared_capacity(repository, environment.get("GITHUB_STATE_TOKEN", "")) or observed
     except (OSError, ValueError, KeyError, TypeError):
         print("::notice::Shared capacity unavailable; retaining bounded direct discovery")
+    order = config.get("staging_order" if kind == "staging" else "pr_order", ["github", "namespace"])
     # Older shared-service deployments can still answer the first PR/cloud
     # preference without a direct scan. Full v2 snapshots cover all destinations.
-    github_first = kind != "staging" and observed["github_busy"] is not None and observed["github_busy"] <= budget
+    github_first = bool(order) and order[0] == "github" and observed["github_busy"] is not None and observed["github_busy"] <= budget
     if observed["namespace_busy"] is None and not github_first:
         for credential, reserve in readers:
             try:
@@ -419,7 +422,6 @@ def route_main():
         except (OSError, ValueError, KeyError, TypeError):
             runner_pages = []
             print("::notice::Retry placement history unavailable; retaining cloud choices")
-    order = config.get("staging_order" if kind == "staging" else "pr_order", ["github", "namespace"])
     selected = route(kind=kind, order=order, machines=config.get("machines", {}), runner_pages=runner_pages,
                      observed=observed, github_budget=budget, namespace_cap=namespace_cap, excluded=excluded,
                      selection_key=environment["GITHUB_RUN_ID"])
