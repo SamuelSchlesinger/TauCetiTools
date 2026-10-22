@@ -260,8 +260,7 @@ def scan_capacity(read, *, repository):
         raise ObservationError("invalid repository identity")
     def runs(name):
         result = pages(read, f"repos/{owner}/{name}/actions/runs?status=in_progress", "workflow_runs")
-        if f"{owner}/{name}" == repository:
-            result += pages(read, f"repos/{owner}/{name}/actions/runs?status=queued", "workflow_runs")
+        result += pages(read, f"repos/{owner}/{name}/actions/runs?status=queued", "workflow_runs")
         return [(f"{owner}/{name}", run["id"]) for run in result]
     with ThreadPoolExecutor(max_workers=8) as pool:
         active = sorted({entry for batch in pool.map(runs, names) for entry in batch})
