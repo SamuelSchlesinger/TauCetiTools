@@ -1,4 +1,5 @@
 import { Client, neon, types } from '@neondatabase/serverless';
+import { log } from './storage';
 
 export type Bind = string | number | null;
 export interface Statement { sql:string; bindings?:Bind[] }
@@ -46,13 +47,16 @@ export class SQLiteStore implements RepositoryStore {
   }
   transaction<T>(apply:(store:RepositoryStore)=>Promise<T>):Promise<T> {
     if(this.transactional) return apply(this);
+    const queued=Date.now();
     return this.lane.run(async()=>{
+      const started=Date.now();
       let result:T,error:unknown,failed=false;
       const execute=async()=>{try{result=await this.storage.transaction(()=>{this.fence();return apply(new SQLiteStore(this.storage,this.sql,true,this.generation,this.context,this.lane));});}catch(cause){failed=true;error=cause;}};
       // Input gating also protects native SQLite recovery/status operations
       // from observing an open async savepoint. Catch inside the gate: an
       // expected transaction rollback must not reset the Durable Object.
-      if(this.context)await this.context.blockConcurrencyWhile(execute);else await execute();
+      try {if(this.context)await this.context.blockConcurrencyWhile(execute);else await execute();}
+      finally {const finished=Date.now();if(finished-queued>=250)log('repository_transaction_slow',{wait_ms:started-queued,transaction_ms:finished-started,failed});}
       if(failed)throw error;return result!;
     });
   }
