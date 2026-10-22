@@ -136,7 +136,11 @@ class FinalizerTests(unittest.TestCase):
         observe = Mock(return_value=data)
         self.assertEqual(finalizer.terminal_state(env, wait=wait, observe=observe)[0], "success")
         observe.assert_called_once_with(7, "main")
-        for field, value in [("id", 8), ("head_sha", "c" * 40), ("state", "canceled"),
+        withdrawn = copy.deepcopy(data)
+        withdrawn["requested_batch"].update(state="canceled", head_sha=None, train=None)
+        self.assertEqual(finalizer.terminal_state(env, wait=wait, observe=lambda *_: withdrawn),
+                         ("withdrawn", "batch withdrawn; no verdict posted"))
+        for field, value in [("id", 8), ("head_sha", "c" * 40),
                              ("train", dict(candidate_id=2, generation=4, staging_ref="staging-candidate-2-3"))]:
             stale = copy.deepcopy(data)
             stale["requested_batch"][field] = value
