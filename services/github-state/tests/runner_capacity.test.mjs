@@ -23,9 +23,24 @@ function readFixture(options={}) {
 }
 test('counts running hosted jobs across repositories, excluding archived repos and non-hosted labels',async()=>{
  const {read,calls}=readFixture();const s=await scanHostedCapacity('org',read);
- assert.equal(s.busy,1);assert.equal(s.requests,4);assert.equal(calls.length,4);
+ assert.equal(s.busy,1);assert.equal(s.requests,6);assert.equal(calls.length,6);
  assert.ok(calls.some(p=>p.includes('status=in_progress&')));
  assert.ok(!calls.some(p=>p.includes('/old/')));
+});
+test('routing snapshot counts queued/running Namespace builds and fleet targets, excluding controls',async()=>{
+ const {read}=readFixture();
+ const snapshot=await scanHostedCapacity('org',async path=>{
+  if(!path.includes('/jobs?'))return read(path);
+  return envelope('jobs',[
+   {name:'sandboxed-build',status:'queued',labels:['nscloud-ubuntu-test']},
+   {name:'sandboxed-build',status:'in_progress',labels:['nscloud-ubuntu-test']},
+   {name:'warm (1)',status:'in_progress',labels:['nscloud-ubuntu-test']},
+   {name:'pick-runner / pick',status:'in_progress',labels:['nscloud-ubuntu-test']},
+   {name:'sandboxed-build',status:'queued',labels:['self-hosted','fleet-'+ 'a'.repeat(32),'fleet-instance-'+ 'b'.repeat(16)]},
+  ]);
+ });
+ assert.equal(snapshot.routing_version,2);assert.equal(snapshot.namespace_busy,3);
+ assert.equal(snapshot.busy,0);assert.equal(snapshot.queued_fleet.length,1);
 });
 test('pagination is complete and a missing later page is unavailable, never an undercount',async()=>{
  const {read}=readFixture({paginate:true});assert.equal((await scanHostedCapacity('org',read)).busy,2);
@@ -38,7 +53,7 @@ test('live Actions count drift does not invent another page or reject a complete
   if(!Array.isArray(r.body))r.body.total_count+=2;
   return r;
  });
- assert.equal(value.busy,1);assert.equal(calls.length,4);
+ assert.equal(value.busy,1);assert.equal(calls.length,6);
 });
 test('one authenticated refresh is shared by concurrent callers and the prepared cache costs no reads',async()=>{
  let reads=0;
@@ -47,11 +62,11 @@ test('one authenticated refresh is shared by concurrent callers and the prepared
  try {
   const get=()=>mf.dispatchFetch('https://state/v1/runner-capacity?repository=org/repo',{headers:{Authorization:'Bearer client'}});
   const values=await Promise.all(Array.from({length:8},async()=>{const r=await get();assert.equal(r.status,200);return r.json();}));
-  assert.equal(reads,4);assert.ok(values.every(v=>v.complete && v.busy===1 && v.organization==='org'));
-  assert.equal((await (await get()).json()).cached,true);assert.equal(reads,4);
+  assert.equal(reads,6);assert.ok(values.every(v=>v.complete && v.busy===1 && v.organization==='org'));
+  assert.equal((await (await get()).json()).cached,true);assert.equal(reads,6);
   assert.equal((await mf.dispatchFetch('https://state/v1/runner-capacity?repository=other/repo',{headers:{Authorization:'Bearer client'}})).status,401);
   assert.equal((await mf.dispatchFetch('https://state/v1/runner-capacity?repository=org/repo')).status,401);
-  assert.equal(reads,4);
+  assert.equal(reads,6);
  }finally{await mf.dispose();}
 });
 test('a failed refresh is briefly cached and cannot publish partial capacity or hammer quota',async()=>{
@@ -107,7 +122,7 @@ test('a busy organization inventory uses at most three reads at once and drains 
    return envelope('jobs',[hosted]);
   }finally{active--;}
  };
- const value=await scanHostedCapacity('org',reader());assert.equal(value.busy,24);assert.equal(value.requests,31);
+ const value=await scanHostedCapacity('org',reader());assert.equal(value.busy,24);assert.equal(value.requests,37);
  assert.equal(peak,3);assert.equal(active,0);
  await assert.rejects(()=>scanHostedCapacity('org',reader(true)),/fixture request rejected/);
  assert.equal(active,0,'refresh must settle all started requests before releasing the single flight');

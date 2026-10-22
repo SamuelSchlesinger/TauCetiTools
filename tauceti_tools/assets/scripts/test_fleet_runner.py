@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """Dedicated placement and same-run fallback are bounded and fail closed."""
 
+import io
+import json
+import os
+import tempfile
+import time
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
+from pathlib import Path
+from unittest.mock import patch
 
+import fleet_runner
 from fleet_recovery import recover
-from fleet_runner import choose
+from fleet_runner import choose, failed_placements, ranked_runners, resolve_machines, route, scan_capacity
 
 
 def runner(*, busy=False, status="online", labels=None):
@@ -20,6 +29,91 @@ def runner(*, busy=False, status="online", labels=None):
 
 
 class Selection(unittest.TestCase):
+    def ranked_fixture(self):
+        machines = [dict(name="tauchonki", machine_id="a" * 32, max_jobs=1, kinds=["staging"]),
+                    dict(name="chris", machine_id="b" * 32, max_jobs=2, kinds=["pr", "staging"])]
+        def guest(machine, identity):
+            labels = ["self-hosted", "linux", "x64", "fleet-" + machine["machine_id"],
+                      "fleet-instance-" + str(identity) * 16]
+            labels += ["tauceti-fleet-" + k for k in machine["kinds"]]
+            return dict(runner(labels=labels), id=identity)
+        runners = [guest(machines[1], 3), guest(machines[0], 1), guest(machines[1], 2)]
+        return machines, [dict(total_count=3, runners=runners)]
+
+    def test_ordered_machine_selection_enforces_class_and_exact_instance(self):
+        machines, pages = self.ranked_fixture()
+        staging = ranked_runners(pages, kind="staging", machines=machines)
+        self.assertEqual([r["machine"] for r in staging], ["tauchonki", "chris", "chris"])
+        pr = ranked_runners(pages, kind="pr", machines=list(reversed(machines)))
+        self.assertEqual([r["machine"] for r in pr], ["chris", "chris"])
+        self.assertTrue(all("tauceti-fleet-pr" in r["labels"] and "fleet-" + "b" * 32 in r["labels"] for r in pr))
+        self.assertEqual(pr[0]["runner_id"], 2)
+
+    def test_pr_and_staging_share_machine_capacity_and_reservations_are_not_double_counted(self):
+        machines, pages = self.ranked_fixture()
+        pages[0]["runners"][0]["busy"] = True
+        result = ranked_runners(pages, kind="staging", machines=machines, reserved=[3])
+        self.assertEqual([r["runner_id"] for r in result], [1, 2])
+        result = ranked_runners(pages, kind="staging", machines=machines, reserved=[2, 3])
+        self.assertEqual([r["runner_id"] for r in result], [1])
+
+    def test_different_runs_spread_across_idle_guests_and_unknown_queue_inventory_disables_fleet(self):
+        machines, pages = self.ranked_fixture()
+        def select(key, queued):
+            return route(kind="pr", order=["chris", "namespace", "github"], machines={m["name"]: m for m in machines},
+                         runner_pages=pages, observed=dict(github_busy=0, namespace_busy=0, queued_fleet=queued),
+                         github_budget=18, namespace_cap=20, selection_key=key)
+        self.assertEqual({select(str(n), [])["runner_id"] for n in range(8)}, {2, 3})
+        self.assertEqual(select("1", None)["pool"], "namespace")
+
+    def test_legacy_labels_partial_inventories_and_ambiguous_instances_cannot_authorize_a_slot(self):
+        machines, pages = self.ranked_fixture()
+        pages[0]["runners"][1]["labels"] = [dict(name=n) for n in ["self-hosted", "linux", "x64", "tauceti-fleet", "fleet-" + "a" * 32]]
+        self.assertEqual([r["machine"] for r in ranked_runners(pages, kind="staging", machines=machines)], ["chris", "chris"])
+        pages[0]["total_count"] = 4
+        with self.assertRaises(ValueError):
+            ranked_runners(pages, kind="staging", machines=machines)
+
+    def test_existing_dispatcher_orders_cloud_and_machine_choices_by_job_class(self):
+        machines, pages = self.ranked_fixture()
+        configured = {m["name"]: m for m in machines}
+        def select(kind, gh, ns, *, reserved=()):
+            order = ["github", "chris", "tauchonki", "namespace"] if kind == "pr" else ["tauchonki", "chris", "namespace", "github"]
+            return route(kind=kind, order=order, machines=configured, runner_pages=pages,
+                         observed=dict(github_busy=gh, namespace_busy=ns, queued_fleet=list(reserved)),
+                         github_budget=18, namespace_cap=20)
+        self.assertEqual(select("pr", 0, 0)["pool"], "github")
+        self.assertEqual(select("pr", 19, 0)["pool"], "chris")
+        self.assertEqual(select("staging", 0, 0)["pool"], "tauchonki")
+        pages[0]["runners"][1]["busy"] = True
+        self.assertEqual(select("staging", 0, 0)["pool"], "chris")
+        for r in pages[0]["runners"]:
+            r["busy"] = True
+        self.assertEqual(select("staging", 0, 19)["pool"], "namespace")
+        self.assertEqual(select("staging", 0, 20)["pool"], "github")
+        self.assertEqual(select("pr", 19, 19)["pool"], "namespace")
+        self.assertEqual(select("pr", 19, 20), dict(pool="github", waiting=True))
+
+    def test_queued_exact_targets_count_against_shared_machine_capacity(self):
+        machines, pages = self.ranked_fixture()
+        queued = [{label["name"] for label in r["labels"]} for r in pages[0]["runners"] if r["id"] in (2, 3)]
+        selected = route(kind="pr", order=["github", "chris", "namespace"], machines={m["name"]: m for m in machines},
+                         runner_pages=pages, observed=dict(github_busy=19, namespace_busy=0, queued_fleet=queued),
+                         github_budget=18, namespace_cap=20)
+        self.assertEqual(selected["pool"], "namespace")
+
+    def test_enrollment_label_resolves_one_permanent_machine_and_ambiguity_disables_it(self):
+        _, pages = self.ranked_fixture()
+        for r in pages[0]["runners"]:
+            if r["id"] in (2, 3):
+                r["labels"].append(dict(name="fleet-host-chris-server"))
+        config = dict(chris=dict(enrollment_name="chris-server", max_jobs=2, kinds=["pr", "staging"]))
+        resolved = resolve_machines(config, pages[0]["runners"])
+        self.assertEqual(resolved["chris"]["machine_id"], "b" * 32)
+        pages[0]["runners"][1]["labels"].append(dict(name="fleet-host-chris-server"))
+        self.assertFalse(resolve_machines(config, pages[0]["runners"]))
+
+
     def test_idle_host_preferred_and_busy_offline_hosts_excluded(self):
         for runners, expected in [
             ([runner()], True),
@@ -45,10 +139,186 @@ class Selection(unittest.TestCase):
             choose([dict(total_count=2, runners=[runner()])], enabled=True, attempt=1)
         )
 
+    def test_retries_skip_never_acquired_machines_but_keep_hosts_that_finished_real_work(self):
+        failed = dict(name="sandboxed-build", status="completed", conclusion="cancelled", runner_id=0,
+                      runner_name="", labels=["self-hosted", "fleet-" + "a" * 32])
+        def read(path):
+            self.assertIn("/attempts/1/jobs?", path)
+            return dict(total_count=1, jobs=[failed])
+        excluded = failed_placements(read, "Test/code", 42, 2)
+        self.assertEqual(excluded, {"a" * 32})
+        machines, pages = self.ranked_fixture()
+        selected = route(kind="staging", order=["tauchonki", "chris", "namespace", "github"],
+                         machines={m["name"]: m for m in machines}, runner_pages=pages,
+                         observed=dict(github_busy=0, namespace_busy=0, queued_fleet=[]),
+                         github_budget=18, namespace_cap=20, excluded=excluded)
+        self.assertEqual(selected["pool"], "chris")
+        failed["runner_id"] = 1
+        self.assertFalse(failed_placements(read, "Test/code", 42, 2))
+
+
+class CapacityScan(unittest.TestCase):
+    def test_namespace_builds_include_queued_jobs_and_exclude_picker_and_control_jobs(self):
+        ns = ["nscloud-ubuntu-24.04-amd64-8x16-with-features"]
+        fixtures = {
+            "orgs/Test/repos?per_page=100&page=1": [dict(name="code", archived=False)],
+            "repos/Test/code/actions/runs?status=in_progress&per_page=100&page=1": dict(total_count=1, workflow_runs=[dict(id=1)]),
+            "repos/Test/code/actions/runs?status=queued&per_page=100&page=1": dict(total_count=1, workflow_runs=[dict(id=2)]),
+            "repos/Test/code/actions/runs/1/jobs?per_page=100&page=1": dict(total_count=5, jobs=[
+                dict(name="sandboxed-build", status="in_progress", labels=ns),
+                dict(name="pick-runner / pick", status="in_progress", labels=ns),
+                dict(name="finalize-merge-group-build", status="in_progress", labels=ns),
+                dict(name="short-control", status="in_progress", labels=["ubuntu-latest"]),
+                dict(name="completed-build", status="completed", labels=["ubuntu-latest"])]),
+            "repos/Test/code/actions/runs/2/jobs?per_page=100&page=1": dict(total_count=1, jobs=[
+                dict(name="sandboxed-build", status="queued", labels=ns)]),
+        }
+        result = scan_capacity(fixtures.__getitem__, repository="Test/code")
+        self.assertEqual(result, dict(github_busy=1, namespace_busy=2, queued_fleet=[]))
+        fixtures["repos/Test/code/actions/runs/2/jobs?per_page=100&page=1"]["total_count"] = 2
+        fixtures["repos/Test/code/actions/runs/2/jobs?per_page=100&page=2"] = dict(total_count=2, jobs=[])
+        with self.assertRaises(ValueError):
+            scan_capacity(fixtures.__getitem__, repository="Test/code")
+
+
+class RoutingEntrypoint(unittest.TestCase):
+    """Exercise actual quota guards, fallback scans and workflow outputs offline."""
+    def fixture(self, *, remaining=5000, busy=0):
+        return {
+            "rate_limit": dict(resources=dict(core=dict(remaining=remaining))),
+            "orgs/Test/repos?per_page=100&page=1": [dict(name="code", archived=False)],
+            "repos/Test/code/actions/runs?status=in_progress&per_page=100&page=1": dict(total_count=1, workflow_runs=[dict(id=3)]),
+            "repos/Test/code/actions/runs?status=queued&per_page=100&page=1": dict(total_count=0, workflow_runs=[]),
+            "repos/Test/code/actions/runs/3/jobs?per_page=100&page=1": dict(total_count=busy, jobs=[dict(name="sandboxed-build", status="in_progress", labels=["ubuntu-24.04"]) for _ in range(busy)]),
+        }
+
+    def pick(self, fixtures, **overrides):
+        calls = []
+        class Response(io.BytesIO):
+            headers = {}
+        class Opener:
+            def open(self, request, timeout):
+                token = request.get_header("Authorization").removeprefix("Bearer ")
+                path = "shared" if request.full_url.startswith("https://github-state.taucetiproject.org/") else request.full_url.removeprefix("https://api.github.com/")
+                calls.append((token, path))
+                value = fixtures[token][path]
+                if isinstance(value, Exception):
+                    raise value
+                headers = {}
+                if isinstance(value, tuple):
+                    value, headers = value
+                response = Response(json.dumps(value).encode())
+                response.headers = headers
+                return response
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "tauceti.toml").write_text('[services.fleet]\nnamespace_build_cap=20\npr_order=["github","namespace"]\nstaging_order=["namespace","github"]\n')
+            output = root / "output"
+            environment = dict(GITHUB_REPOSITORY="Test/code", GITHUB_RUN_ID="5", GITHUB_RUN_ATTEMPT="1",
+                               GITHUB_OUTPUT=str(output), FLEET_JOB_KIND="pr", GH_TOKEN="app", FALLBACK_TOKEN="repository")
+            environment.update(overrides)
+            before = Path.cwd()
+            try:
+                os.chdir(root)
+                with patch.dict(os.environ, environment, clear=True), patch.object(fleet_runner.urllib.request, "build_opener", return_value=Opener()), redirect_stdout(io.StringIO()):
+                    fleet_runner.route_main()
+            finally:
+                os.chdir(before)
+            return dict(line.split("=", 1) for line in output.read_text().splitlines()), calls
+
+    def shared(self, **changes):
+        now = time.time() * 1000
+        value = dict(complete=True, organization="Test", busy=0, observed_at=now, retry_at=now + 30000)
+        value.update(changes)
+        return value
+
+    def test_fresh_existing_shared_snapshot_avoids_direct_github_reads(self):
+        output, calls = self.pick(dict(state=dict(shared=self.shared())), GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(calls, [("state", "shared")])
+
+    def test_v2_snapshot_enforces_namespace_cap_without_direct_discovery(self):
+        snapshot = self.shared(routing_version=2, namespace_busy=20, queued_fleet=[])
+        output, calls = self.pick(dict(state=dict(shared=snapshot)), GITHUB_STATE_TOKEN="state", FLEET_JOB_KIND="staging")
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(output["namespace_busy"], "20")
+        self.assertEqual(calls, [("state", "shared")])
+
+    def test_stale_wrong_org_invalid_and_oversized_shared_values_use_direct_fallback(self):
+        for changes in [dict(observed_at=0), dict(organization="Other"), dict(busy=True),
+                        dict(observed_at=float("nan")), dict(retry_at=0), dict(routing_version=2, namespace_busy=-1, queued_fleet=[])]:
+            with self.subTest(changes=changes):
+                output, calls = self.pick(dict(state=dict(shared=self.shared(**changes)), app=self.fixture()), GITHUB_STATE_TOKEN="state")
+                self.assertEqual(output["pool"], "github")
+                self.assertIn(("app", "rate_limit"), calls)
+
+    def test_real_api_link_pagination_accepts_live_actions_count_drift(self):
+        fixtures = self.fixture()
+        path = "repos/Test/code/actions/runs/3/jobs?per_page=100&page=1"
+        fixtures[path]["total_count"] = 99
+        output, _ = self.pick(dict(app=fixtures))
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(output["busy"], "0")
+
+    def test_low_shared_quota_restarts_complete_scan_using_repository_budget(self):
+        output, calls = self.pick(dict(app=self.fixture(remaining=1500), repository=self.fixture()))
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(calls[0], ("app", "rate_limit"))
+        self.assertFalse(any(token == "app" for token, path in calls[1:]))
+        self.assertIn(("repository", "orgs/Test/repos?per_page=100&page=1"), calls)
+
+    def test_partial_app_scan_is_discarded_and_repository_snapshot_wins(self):
+        app = self.fixture(busy=0)
+        app["repos/Test/code/actions/runs/3/jobs?per_page=100&page=1"] = OSError("unavailable")
+        output, calls = self.pick(dict(app=app, repository=self.fixture(busy=19)))
+        self.assertEqual(output["pool"], "namespace")
+        self.assertEqual(output["busy"], "19")
+        self.assertEqual(output["namespace_cap"], "20")
+        self.assertIn(("repository", "orgs/Test/repos?per_page=100&page=1"), calls)
+
+    def test_two_exhausted_budgets_wait_on_github_without_bypassing_namespace_cap(self):
+        output, calls = self.pick(dict(app=self.fixture(remaining=1500), repository=self.fixture(remaining=250)))
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(json.loads(output["runner"]), "ubuntu-24.04")
+        self.assertEqual(calls, [("app", "rate_limit"), ("repository", "rate_limit")])
+
+    def test_mid_scan_requests_stop_at_quota_reserve(self):
+        output, calls = self.pick(dict(app=self.fixture(remaining=1501), repository=self.fixture(remaining=251)))
+        self.assertEqual(output["pool"], "github")
+        self.assertFalse(any("actions/runs" in path for token, path in calls))
+
+    def test_namespace_staging_shape_priority_assignment_and_attempt_are_preserved(self):
+        output, _ = self.pick(dict(app=self.fixture()), FLEET_JOB_KIND="staging")
+        self.assertEqual(output["pool"], "namespace")
+        self.assertEqual(output["attempt"], "1")
+        self.assertEqual(json.loads(output["runner"]), ["nscloud-ubuntu-24.04-amd64-16x32-with-features;job.priority=1", "namespace-features:container.privileged=true;github.run-id=5"])
+
 
 class Recovery(unittest.TestCase):
     def advance(self, seconds):
         self.now += seconds
+
+    def test_policy_recovery_preserves_run_identity_on_a_later_staging_attempt(self):
+        fetch = self.fixture()
+        self.run["run_attempt"] = 2
+        self.job["labels"] = ["self-hosted", "tauceti-fleet-staging", "fleet-" + "b" * 32]
+        result = recover(42, fetch=fetch, clock=lambda: self.now, sleep=self.advance, policy=True)
+        self.assertEqual(result, "rerun-with-updated-placement-requested")
+        self.assertTrue(any("/attempts/2/jobs?" in path for path, _ in self.calls))
+        self.assertEqual([path for path, data in self.calls if data is not None], ["/actions/runs/42/force-cancel", "/actions/runs/42/rerun"])
+
+    def test_pr_recovery_requires_the_immutable_head_to_still_be_current(self):
+        for current, expected in [("a" * 40, "rerun-with-updated-placement-requested"),
+                                  ("b" * 40, "superseded-pr-cancelled")]:
+            fetch = self.fixture()
+            self.run.update(event="pull_request_target", display_title="pr-build pr=7 head=" + "a" * 40)
+            self.job["labels"] = ["self-hosted", "tauceti-fleet-pr", "fleet-" + "b" * 32]
+            def operation(path, data=None, *, current=current, fetch=fetch):
+                if path == "/pulls/7":
+                    return dict(head=dict(sha=current))
+                return fetch(path, data)
+            self.assertEqual(recover(42, fetch=operation, clock=lambda: self.now, sleep=self.advance, policy=True), expected)
+            self.assertEqual(any(path.endswith("/rerun") for path, _ in self.calls), current == "a" * 40)
 
     def test_slow_picker_gets_full_acquisition_window_after_labels_appear(self):
         fetch = self.fixture()
