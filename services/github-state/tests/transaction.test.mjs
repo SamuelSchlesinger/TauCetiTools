@@ -58,3 +58,14 @@ test('a standalone store batch rolls back earlier statements when a later statem
  }`});
  try{const ns=await mf.getDurableObjectNamespace('REPOSITORIES'),stub=ns.get(ns.idFromName(repository.id));assert.equal((await stub.fetch('https://internal/test-failed-batch')).status,409);assert.deepEqual(await (await stub.fetch('https://internal/test-batch-result')).json(),[]);}finally{await mf.dispose();}
 });
+
+test('public query responses expose repository handling and dispatch wait timings',async()=>{
+ const mf=await runtime(async()=>{throw Error('unexpected upstream request');},{},{repositoryAlarms:false});
+ try{
+  const response=await mf.dispatchFetch('https://state/v1/query?repository=org/repo&operation=files&args=%7B%22number%22%3A7%7D',{headers:{Authorization:'Bearer client'}});
+  assert.ok(response.headers.has('X-TauCeti-Query-Ms'));
+  assert.ok(response.headers.has('X-TauCeti-Input-Wait-Ms'));
+  assert.ok(Number(response.headers.get('X-TauCeti-Query-Ms'))>=0);
+  assert.ok(Number(response.headers.get('X-TauCeti-Input-Wait-Ms'))>=0);
+ }finally{await mf.dispose();}
+});
