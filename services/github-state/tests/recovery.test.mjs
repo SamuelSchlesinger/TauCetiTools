@@ -131,6 +131,63 @@ function repositoryFixture(env={},size=0,db=new DatabaseSync(':memory:'),archive
  state.fixtureReady=ready;
  return {db,state,archive,ready};
 }
+test('receipt lookups stay outside the writer and do not block unrelated mirror reads',async()=>{
+ const f=repositoryFixture();await f.ready;
+ const key='fixture/slow-receipt';await f.archive.put(key,JSON.stringify({issue:{number:7},comment:{id:42,body:'hello'}}));
+ let release,entered;const gate=new Promise(r=>release=r),ready=new Promise(r=>entered=r);
+ const head=f.archive.head;let heads=0;
+ let writing=false;const atomic=f.state.atomic.bind(f.state);
+ f.state.atomic=apply=>atomic(async state=>{writing=true;try{return await apply(state);}finally{writing=false;}});
+ f.archive.head=async key=>{if(key.startsWith('receipts/')){assert.equal(writing,false,'receipt I/O must not hold the writer');heads++;entered();await gate;}return head(key);};
+ const event=f.state.ingest({repository:repo.name,event:'issue_comment',delivery:'slow-receipt',key,received:Date.now()});
+ await ready;let timer;
+ try {
+  const read=f.state.store.exec("SELECT value FROM meta WHERE key='repository'");
+  const result=await Promise.race([read,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('receipt I/O blocked a local read')),1000);})]);
+  assert.equal(result.toArray().length,1);
+ }finally{clearTimeout(timer);release();}
+ await event;assert.equal(heads,1,'only one receipt lookup is needed, before acquiring the writer');
+});
+
+test('SQL-first receipt lookup deduplicates while archival moves a receipt to R2',async()=>{
+ const f=repositoryFixture();await f.ready;
+ const delivery='archive-race',key='fixture/archive-race';
+ await f.archive.put(key,JSON.stringify({issue:{number:7},comment:{id:42,body:'must not replay'}}));
+ f.db.prepare('INSERT INTO deliveries VALUES(?,?,?)').run(delivery,'issue_comment',Date.now()-30*86400000);
+ let heads=0;const head=f.archive.head;
+ f.archive.head=async key=>{heads++;return head(key);};
+ const pointer={repository:repo.name,event:'issue_comment',delivery,key,received:Date.now()};
+ await f.state.ingest(pointer);
+ assert.equal(heads,0,'a SQL receipt needs no remote lookup');
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM resources').get().n,0);
+ // Archival publishes R2 before deleting SQL. After deletion the same event
+ // is still rejected by the one pre-transaction remote check.
+ await f.archive.put('receipts/100/'+delivery+'.json','{}');
+ f.db.prepare('DELETE FROM deliveries WHERE id=?').run(delivery);
+ await f.state.ingest(pointer);assert.equal(heads,1);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM resources').get().n,0);
+});
+
+test('a concurrent ingest receipt remains retained even for an old parked event',async()=>{
+ const f=repositoryFixture();await f.ready;
+ const pointer={repository:repo.name,event:'issue_comment',delivery:'concurrent-old',key:'fixture/concurrent-old',received:Date.now()-30*86400000};
+ await f.archive.put(pointer.key,JSON.stringify({issue:{number:7},comment:{id:42,body:'must not apply twice'}}));
+ f.state.storageLoaded=true;f.state.retentionPolicy={mode:'enforce',disabled:[],pinned:[]};
+ const head=f.archive.head;let raced=false;
+ f.archive.head=async key=>{
+  const value=await head(key);
+  if(key.startsWith('receipts/') && !raced){
+   raced=true;
+   await f.state.atomic(state=>state.commitReceipt(pointer));
+   await f.state.archiveDeliveryReceipts();
+  }
+  return value;
+ };
+ await f.state.ingest(pointer);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,1);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM resources').get().n,0);
+ assert.equal(await f.state.meta('review_coordination'),undefined);
+});
 const queryFixture=(state,q)=>state.fetch(new Request('https://internal/query',{method:'POST',body:JSON.stringify({repository:'org/repo',...q})})).then(r=>r.json());
 
 test('R2 cursors validate repository, query and expiry',async()=>{
