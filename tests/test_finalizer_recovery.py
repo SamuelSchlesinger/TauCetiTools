@@ -206,7 +206,8 @@ class Withdrawn(unittest.TestCase):
     def test_canceled_run_with_invalid_or_unavailable_bors_still_posts_failure(self):
         intent = finalizer.status_intent(self.env, dict(state="success", context="build",
             description="audited", target_url="https://github.com/TauCetiProject/TauCeti/actions/runs/12"))
-        for data in (None, dict(self.data, repo="other/repo"), OSError("unavailable")):
+        for data in (None, dict(self.data, repo="other/repo"), OSError("unavailable"),
+                     ValueError("incorrectly scoped bors observation")):
             observation = dict(side_effect=data) if isinstance(data, Exception) else dict(return_value=data)
             with self.subTest(data=data), patch.object(finalizer, "observation", **observation), \
                  patch.object(finalizer, "api", side_effect=[dict(run_attempt=2, conclusion="cancelled"), [], {}]) as request, \
