@@ -312,14 +312,14 @@ def route(*, kind, order, machines, runner_pages, observed, github_budget, names
     """
     if type(github_budget) is not int or github_budget < 1 or type(namespace_cap) is not int or namespace_cap < 1:
         raise ObservationError("invalid capacity budgets")
-    if observed.get("queued_fleet", []) is None:
+    if kind != "staging" and observed.get("queued_fleet", []) is None:
         runner_pages = []
     try:
         resolved = resolve_machines(machines, inventory(runner_pages)) if runner_pages else {}
         reserved = set()
         for runner in inventory(runner_pages) if runner_pages else []:
             labels = {str(label.get("name", "")).lower() for label in runner.get("labels", [])}
-            if any(queued <= labels for queued in observed.get("queued_fleet", [])):
+            if any(queued <= labels for queued in (observed.get("queued_fleet") or [])):
                 reserved.add(runner["id"])
         ranked = ranked_runners(runner_pages, kind=kind, machines=[resolved[n] for n in order if n in resolved], reserved=reserved) if kind in ("pr", "staging") and runner_pages else []
     except (ValueError, KeyError, TypeError):
@@ -357,6 +357,22 @@ def failed_placements(read, repository, run_id, attempt):
     return excluded
 
 
+def fleet_inventory(environment, repository):
+    """Read current dedicated-runner availability, without cloud discovery."""
+    runner_pages = []
+    try:
+        if environment.get("FLEET_CI_ENABLED") == "true" and environment.get("FLEET_READ_TOKEN"):
+            reader = GitHubRead(environment["FLEET_READ_TOKEN"], 0)
+            group = int(environment["FLEET_RUNNER_GROUP_ID"])
+            if group <= 0:
+                raise ObservationError("invalid fleet runner group")
+            runners = pages(reader.read, f"orgs/{repository.split('/')[0]}/actions/runner-groups/{group}/runners", "runners")
+            runner_pages = [dict(total_count=len(runners), runners=runners)]
+    except (OSError, ValueError, KeyError, TypeError):
+        print("::notice::Fleet inventory unavailable; retaining cloud choices")
+    return runner_pages
+
+
 def route_main():
     environment = os.environ
     repository = environment["GITHUB_REPOSITORY"]
@@ -378,32 +394,6 @@ def route_main():
     except (OSError, ValueError, KeyError, TypeError):
         print("::notice::Shared capacity unavailable; retaining bounded direct discovery")
     order = config.get("staging_order" if kind == "staging" else "pr_order", ["github", "namespace"])
-    # Older shared-service deployments can still answer the first PR/cloud
-    # preference without a direct scan. Full v2 snapshots cover all destinations.
-    github_first = bool(order) and order[0] == "github" and observed["github_busy"] is not None and observed["github_busy"] <= budget
-    if observed["namespace_busy"] is None and not github_first:
-        for credential, reserve in readers:
-            try:
-                reader = GitHubRead(credential, reserve)
-                reader.preflight()
-                observed = scan_capacity(reader.read, repository=repository)
-                capacity_reader = reader
-                break
-            except (OSError, ValueError, KeyError, TypeError):
-                print("::notice::Capacity scan incomplete or API reserve protected")
-    runner_pages = []
-    try:
-        if environment.get("FLEET_CI_ENABLED") == "true" and environment.get("FLEET_READ_TOKEN"):
-            reader = GitHubRead(environment["FLEET_READ_TOKEN"], 0)
-            group = int(environment["FLEET_RUNNER_GROUP_ID"])
-            if group <= 0:
-                raise ObservationError("invalid fleet runner group")
-            runners = pages(reader.read, f"orgs/{repository.split('/')[0]}/actions/runner-groups/{group}/runners", "runners")
-            runner_pages = [dict(total_count=len(runners), runners=runners)]
-    except (OSError, ValueError, KeyError, TypeError):
-        print("::notice::Fleet inventory unavailable; retaining cloud choices")
-    if kind == "pr" and not re.fullmatch(r"[a-f0-9]{40}", environment.get("PR_HEAD", "")):
-        runner_pages = []  # Safe PR recovery needs an immutable head in the run title.
     excluded = set()
     attempt = int(environment["GITHUB_RUN_ATTEMPT"])
     if attempt > 1:
@@ -420,10 +410,50 @@ def route_main():
                     raise ObservationError("retry placement history unavailable")
             excluded = failed_placements(capacity_reader.read, repository, environment["GITHUB_RUN_ID"], attempt)
         except (OSError, ValueError, KeyError, TypeError):
-            runner_pages = []
+            excluded = None
             print("::notice::Retry placement history unavailable; retaining cloud choices")
-    selected = route(kind=kind, order=order, machines=config.get("machines", {}), runner_pages=runner_pages,
-                     observed=observed, github_budget=budget, namespace_cap=namespace_cap, excluded=excluded,
+    runner_pages = fleet_inventory(environment, repository) if kind == "staging" and excluded is not None else []
+    selected = None
+    # Staging can use its own complete idle-runner inventory even when unrelated
+    # global queue coverage is unavailable. Honor known reservations and only
+    # consider machines preceding the first cloud preference. Retry exclusions
+    # have already been checked, so recovery can also avoid global scans.
+    if kind == "staging":
+        fleet_order = []
+        for name in order:
+            if name in ("github", "namespace"):
+                break
+            fleet_order.append(name)
+        candidate = route(kind=kind, order=fleet_order, machines=config.get("machines", {}), runner_pages=runner_pages,
+                          observed=observed, github_budget=budget, namespace_cap=namespace_cap, excluded=excluded or (),
+                          selection_key=environment["GITHUB_RUN_ID"])
+        if candidate["pool"] not in ("github", "namespace"):
+            selected = candidate
+    # Older shared-service deployments can still answer the first PR/cloud
+    # preference without a direct scan. Full v2 snapshots cover all destinations.
+    github_first = bool(order) and order[0] == "github" and observed["github_busy"] is not None and observed["github_busy"] <= budget
+    scanned = False
+    if selected is None and observed["namespace_busy"] is None and not github_first:
+        for credential, reserve in readers:
+            try:
+                reader = GitHubRead(credential, reserve)
+                reader.preflight()
+                observed = scan_capacity(reader.read, repository=repository)
+                capacity_reader = reader
+                scanned = True
+                break
+            except (OSError, ValueError, KeyError, TypeError):
+                print("::notice::Capacity scan incomplete or API reserve protected")
+    # Observe queued reservations before availability: a formerly queued job may
+    # acquire a runner during a slow direct scan. PRs read inventory only here.
+    if kind != "staging" or scanned:
+        runner_pages = fleet_inventory(environment, repository)
+    if kind == "pr" and not re.fullmatch(r"[a-f0-9]{40}", environment.get("PR_HEAD", "")):
+        runner_pages = []
+    if attempt > 1 and excluded is None:
+        runner_pages = []
+    selected = selected or route(kind=kind, order=order, machines=config.get("machines", {}), runner_pages=runner_pages,
+                     observed=observed, github_budget=budget, namespace_cap=namespace_cap, excluded=excluded or (),
                      selection_key=environment["GITHUB_RUN_ID"])
     target = "ubuntu-24.04"
     if selected["pool"] == "namespace":

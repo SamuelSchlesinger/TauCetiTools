@@ -192,7 +192,7 @@ class RoutingEntrypoint(unittest.TestCase):
             "repos/Test/code/actions/runs/3/jobs?per_page=100&page=1": dict(total_count=busy, jobs=[dict(name="sandboxed-build", status="in_progress", labels=["ubuntu-24.04"]) for _ in range(busy)]),
         }
 
-    def pick(self, fixtures, **overrides):
+    def pick(self, fixtures, *, config=None, **overrides):
         calls = []
         class Response(io.BytesIO):
             headers = {}
@@ -202,6 +202,8 @@ class RoutingEntrypoint(unittest.TestCase):
                 path = "shared" if request.full_url.startswith("https://github-state.taucetiproject.org/") else request.full_url.removeprefix("https://api.github.com/")
                 calls.append((token, path))
                 value = fixtures[token][path]
+                if callable(value):
+                    value = value()
                 if isinstance(value, Exception):
                     raise value
                 headers = {}
@@ -212,7 +214,7 @@ class RoutingEntrypoint(unittest.TestCase):
                 return response
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            (root / "tauceti.toml").write_text('[services.fleet]\nnamespace_build_cap=20\npr_order=["github","namespace"]\nstaging_order=["namespace","github"]\n')
+            (root / "tauceti.toml").write_text(config or '[services.fleet]\nnamespace_build_cap=20\npr_order=["github","namespace"]\nstaging_order=["namespace","github"]\n')
             output = root / "output"
             environment = dict(GITHUB_REPOSITORY="Test/code", GITHUB_RUN_ID="5", GITHUB_RUN_ATTEMPT="1",
                                GITHUB_OUTPUT=str(output), FLEET_JOB_KIND="pr", GH_TOKEN="app", FALLBACK_TOKEN="repository")
@@ -225,6 +227,67 @@ class RoutingEntrypoint(unittest.TestCase):
             finally:
                 os.chdir(before)
             return dict(line.split("=", 1) for line in output.read_text().splitlines()), calls
+
+    def staging_fixture(self):
+        machines, inventory = Selection().ranked_fixture()
+        config = '[services.fleet]\nstaging_order=["tauchonki","chris","namespace","github"]\n'
+        for machine in machines:
+            config += f'[services.fleet.machines.{machine["name"]}]\nmachine_id="{machine["machine_id"]}"\nmax_jobs={machine["max_jobs"]}\nkinds={json.dumps(machine["kinds"])}\n'
+        return config, inventory[0]
+
+    def test_staging_v1_and_missing_shared_state_choose_fleet_without_cloud_scans(self):
+        config, inventory = self.staging_fixture()
+        for state in (self.shared(), OSError("shared server offline")):
+            fixtures = dict(fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}, state=dict(shared=state))
+            output, calls = self.pick(fixtures, config=config, FLEET_JOB_KIND="staging", FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", GITHUB_STATE_TOKEN="state")
+            self.assertEqual(output["pool"], "tauchonki")
+            self.assertEqual(output["namespace_busy"], "")
+            self.assertFalse(any(token in ("app", "repository") for token, _ in calls), calls)
+            self.assertTrue(any(label.startswith("fleet-instance-") for label in json.loads(output["runner"])["labels"]))
+
+    def test_staging_known_reservations_still_select_next_eligible_machine(self):
+        config, inventory = self.staging_fixture()
+        queued = [[v["name"] for v in inventory["runners"][1]["labels"]]]
+        output, calls = self.pick(dict(fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}, state=dict(shared=self.shared(routing_version=2, namespace_busy=0, queued_fleet=queued))), config=config, FLEET_JOB_KIND="staging", FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"], "chris")
+        self.assertEqual(len(calls), 2)
+
+    def test_direct_scan_finishes_before_pr_runner_availability_is_read(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=[\"github\",\"chris\",\"tauchonki\",\"namespace\"]\n')
+        fixtures = self.fixture(busy=19)
+        output, calls = self.pick(dict(app=fixtures, fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}), config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", PR_HEAD="a"*40)
+        self.assertEqual(output["pool"], "chris")
+        self.assertGreater(calls.index(("fleet", "orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1")), calls.index(("app", "repos/Test/code/actions/runs/3/jobs?per_page=100&page=1")))
+
+    def test_staging_fallthrough_refreshes_runner_availability_after_cloud_scan(self):
+        config, inventory = self.staging_fixture()
+        busy = json.loads(json.dumps(inventory))
+        for guest in busy["runners"]: guest["busy"] = True
+        snapshots = [busy, inventory]
+        output, calls = self.pick(dict(app=self.fixture(), fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": lambda: snapshots.pop(0)}), config=config, FLEET_JOB_KIND="staging", FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3")
+        self.assertEqual(output["pool"], "tauchonki")
+        self.assertEqual([token for token, _ in calls if token=="fleet"], ["fleet", "fleet"])
+
+    def test_staging_retry_checks_prior_unassigned_placement_before_reusing_fleet(self):
+        config, inventory = self.staging_fixture()
+        fixtures = self.fixture()
+        fixtures["repos/Test/code/actions/runs/5/attempts/1/jobs?per_page=100&page=1"] = dict(total_count=1, jobs=[dict(name="sandboxed-build", status="completed", conclusion="cancelled", runner_id=0, runner_name="", labels=["self-hosted", "fleet-" + "a" * 32])])
+        output, calls = self.pick(dict(app=fixtures, fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}, state=dict(shared=self.shared(routing_version=2, namespace_busy=0, queued_fleet=[]))), config=config, FLEET_JOB_KIND="staging", FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", GITHUB_STATE_TOKEN="state", GITHUB_RUN_ATTEMPT="2")
+        self.assertEqual(output["pool"], "chris")
+        self.assertIn(("app", "repos/Test/code/actions/runs/5/attempts/1/jobs?per_page=100&page=1"), calls)
+
+    def test_staging_busy_offline_mislabeled_or_unavailable_inventory_retains_cloud_fallback(self):
+        config, inventory = self.staging_fixture()
+        for failure in ("busy", "offline", "labels", "unavailable"):
+            current = json.loads(json.dumps(inventory))
+            for guest in current["runners"]:
+                if failure == "busy": guest["busy"] = True
+                if failure == "offline": guest["status"] = "offline"
+                if failure == "labels": guest["labels"] = []
+            if failure == "unavailable": current = OSError("inventory offline")
+            output, calls = self.pick(dict(fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": current}, state=dict(shared=self.shared(routing_version=2, namespace_busy=0, queued_fleet=[]))), config=config, FLEET_JOB_KIND="staging", FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", GITHUB_STATE_TOKEN="state")
+            self.assertEqual(output["pool"], "namespace", failure)
 
     def shared(self, **changes):
         now = time.time() * 1000
