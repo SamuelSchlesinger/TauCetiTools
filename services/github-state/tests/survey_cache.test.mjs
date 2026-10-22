@@ -18,13 +18,13 @@ const extension=`
  }
 `;
 
-test('survey discovery tolerates revision churn with bounded reuse; PR reads stay fresh',async()=>{
+for(const operation of ['survey','open_prs','open_issues'])test(operation+' discovery tolerates revision churn with bounded reuse; PR reads stay fresh',async()=>{
  let network=0;
  const mf=await runtime(async()=>{network++;throw Error('unexpected GitHub request');},{},{repositoryAlarms:false,repositoryExtension:extension});
  try{
   const ns=await mf.getDurableObjectNamespace('REPOSITORIES'),stub=ns.get(ns.idFromName(repository.id));
   await send(stub,'/configure',{repository:repository.name});
-  const q={repository:repository.name,operation:'survey',args:{roadmap:'auto',stages:'review,fix'}};
+  const q={repository:repository.name,operation,...(operation==='survey'?{args:{roadmap:'auto',stages:'review,fix'}}:{})};
   const first=await (await send(stub,'/query',q)).json();
   assert.equal(first.status,'ok');assert.equal(first.data[0].build,1);
   const second=await (await send(stub,'/query',q)).json();
