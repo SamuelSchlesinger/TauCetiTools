@@ -56,6 +56,26 @@ Lost responses and interrupted cleanup reuse delivery receipts. Semantic events
 use the ordinary application path, held retry deadlines remain in force, and an
 older repository deployment without the private batch RPC falls back to that path.
 
+Explicit admin replay shares cron's conditional R2 lease and stored lane cursor.
+The optional `limit` must be an integer from 1 to 100 (default 25); invalid
+values return HTTP 400 before acquiring the lease. Each pass uses a twenty-second
+work budget, respects pointer and recovery-error backoffs, and returns `leased`, `deadline`, or `lease_replaced` when appropriate.
+An expired owner's completion cannot overwrite a replacement checkpoint.
+Permanent delivery receipts use conditional creation. Failed cleanup updates a
+pointer only if the ETag of its loaded snapshot still matches, so a stale attempt cannot
+recreate an already deleted pointer or shorten a newer retry deadline.
+`delivery_errors` in the immediate admin response contains bounded delivery/event/
+timestamp/reason metadata with `retry_scheduled`, `held`, `superseded` or
+`unconfirmed` outcomes for receipt inspection. Superseded updates are counted
+separately from failures. These error arrays are excluded from newly stored pass summaries and are
+filtered from health and observation responses, including older summaries. Successful manual work does not postpone cron. A completed held sweep only
+unblocks reconciliation when that sweep started after target selection; a saved
+pre-selection cursor cannot provide that evidence. A parkable refusal retains
+the checkpoint before its group. Future retry deadlines remain binding; a sweep
+visits deferred input without treating it as applied, and held input still blocks
+final migration completion. Treat a lost response as
+unknown progress and repeat through the same leased interface.
+
 If replay needs a post-selection service fix, preserve PostgreSQL ownership,
 the source write fence, the original selection deployment and baseline. Record
 the fix-forward deployment separately in the operator's release receipt, verify the
