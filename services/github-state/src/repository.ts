@@ -779,8 +779,13 @@ export class RepositoryState extends DurableObject<Env> {
   async ingest(pointer:EventPointer,preparedBody?:any): Promise<void> {
     const configured=repository(this.env,pointer.repository);if(!configured)throw Error('repository not allowed');
     if(!this.store.transactional){
-      if(await this.env.ARCHIVE.head(receiptKey(configured.id,pointer.delivery)))return;
+      // Archival publishes R2 before deleting SQL. Read SQL first: either its
+      // receipt is still present, or the following R2 check can see the archive.
+      // Reversing these reads needs another remote lookup under the writer.
       if((await this.store.exec('SELECT id FROM deliveries WHERE id=?',pointer.delivery)).toArray().length)return;
+      const receiptStarted=Date.now(),archived=await this.env.ARCHIVE.head(receiptKey(configured.id,pointer.delivery));
+      if(Date.now()-receiptStarted>=100)log('repository_receipt_slow',{elapsed_ms:Date.now()-receiptStarted,transactional:false});
+      if(archived)return;
       let body:any,encodings=new Map<string,string>();
       if(!CI_EVENTS.has(pointer.event)){
         const object=await this.env.ARCHIVE.get(pointer.key);if(!object)throw Error('event body unavailable');body=parseGitHub(await object.text());
@@ -788,12 +793,8 @@ export class RepositoryState extends DurableObject<Env> {
       }
       return this.atomic(async state=>{state.preparedEncodings=encodings;await RepositoryState.prototype.ingest.call(state,pointer,body);});
     }
-    // Receipt archival publishes R2 before deleting SQL. Recheck under writer
-    // ownership so an archival race cannot reapply a committed old delivery.
-    const receiptStarted=Date.now();
-    const archived=await this.maintenanceArchive.head(receiptKey(configured.id,pointer.delivery));
-    if(Date.now()-receiptStarted>=100)log('repository_receipt_slow',{elapsed_ms:Date.now()-receiptStarted,transactional:true});
-    if(archived)return;
+    // Another ingest can commit while we preload the body. Its fresh SQL
+    // receipt remains retained; no external I/O is needed under the writer.
     if((await this.store.exec('SELECT id FROM deliveries WHERE id=?',pointer.delivery)).toArray().length)return;
     if(this.degraded){if(this.degraded.reason!=='storage_full')throw Error('repository storage control unavailable');throw Error('Exceeded the maximum database size; SQLITE_FULL recorded at '+new Date(this.degraded.since).toISOString());}
     if(CI_EVENTS.has(pointer.event)){await this.store.exec('INSERT OR IGNORE INTO deliveries VALUES(?,?,?)',pointer.delivery,'ignored:'+pointer.event,Date.now());return;}
@@ -865,6 +866,8 @@ export class RepositoryState extends DurableObject<Env> {
     await this.commitReceipt(pointer);
   }
   async commitReceipt(pointer:EventPointer):Promise<void> {
+    // Use commit time, not the event's age: writer-side ingest deduplication
+    // relies on archival retaining newly committed SQL receipts for 14 days.
     const now=Date.now();
     await this.store.batch([
       {sql:'INSERT OR IGNORE INTO deliveries VALUES(?,?,?)',bindings:[pointer.delivery,pointer.event,now]},
