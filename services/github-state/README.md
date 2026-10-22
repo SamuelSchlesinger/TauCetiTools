@@ -277,7 +277,12 @@ repositories requires granting the installation visibility to those repositories
 The response includes `complete`, `organization`, `busy`, `observed_at`, `retry_at`,
 and refresh request counts. This is an advisory observation, not a reserved slot
 or an atomic snapshot. Missing pages or quota rejection produce HTTP 503 with
-`complete:false`, never a partial count. Failed refreshes are cached for two minutes (or a longer instructed cooldown).
+`complete:false`, never a partial count. Failed refreshes are cached for two minutes
+(or a longer instructed cooldown). Routing version 2 also reports queued/running
+Namespace build jobs and queued fleet targets from the same bounded scan, shared
+by all pickers. Picker, recovery, publication, and finalizer control jobs are
+excluded from the build count.
+
 Refresh uses existing installation quota accounting, honors secondary cooldowns,
 leaves at least 1,500 core requests for repository work, and spends at most 500
 read attempts per rolling hour, including lost network responses on this operation. Brief request-slot
