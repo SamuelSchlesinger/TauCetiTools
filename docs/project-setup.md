@@ -1005,6 +1005,14 @@ gh run watch RUN_ID --repo ExampleOrg/ExampleCeti --exit-status --interval 120
 
 ## Operation and recovery
 
+If Bors explicitly reports the requested staging batch as canceled, a successful
+build's finalizer finishes with `batch withdrawn; no verdict posted`. It removes
+the pending finalization or success intent without posting a red or green
+`build` commit status. This is a completed finalizer job, not a successful build
+verdict for the withdrawn batch. Missing, malformed or unavailable Bors responses
+do not prove withdrawal; real build and cache publication failures retain their
+failure behavior.
+
 Review upgrades as configuration/workflow PRs. Update common pins and their literal callers
 together. Never point unfinished publication records at a new destination during an upgrade.
 Archive failures retain local outboxes; retry synchronization after restoring access.

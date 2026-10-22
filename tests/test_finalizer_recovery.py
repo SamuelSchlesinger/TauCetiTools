@@ -1,5 +1,6 @@
 """Finalizer retries report publication outcomes without replaying obsolete verdicts."""
 import contextlib
+import copy
 import io
 import json
 import os
@@ -127,6 +128,75 @@ class Recovery(unittest.TestCase):
             self.assertEqual(now[0], 25)
             self.assertTrue(path.exists())
             self.assertEqual(sum(call.args[0].startswith("/statuses/") for call in request.call_args_list), 3)
+
+
+class Withdrawn(unittest.TestCase):
+    def setUp(self):
+        self.env = dict(ENV, BUILD_JOB_RESULT="success", BUILD_STATE="success",
+                        BORS_STAGING="true", BORS_BATCH_ID="1547", BORS_BASE_REF="main",
+                        BORS_BASE_SHA="b" * 40)
+        # Bors clears the commit/train on withdrawal, retaining the exact batch ID.
+        self.data = dict(schema="tauceti-bors.observation/v1", repo=finalizer.REPO, base="main",
+                         requested_batch=dict(id=1547, base="main", state="canceled",
+                                              head_sha=None, base_sha="b" * 40, train=None))
+
+    def state(self, data):
+        return finalizer.terminal_state(self.env, observe=lambda *_: data)
+
+    def test_only_an_explicit_correctly_scoped_cancellation_proves_withdrawal(self):
+        self.assertEqual(self.state(self.data), ("withdrawn", "batch withdrawn; no verdict posted"))
+        for field, value in [("repo", "other/repo"), ("base", "other"), ("schema", "unknown"),
+                             ("requested_batch", None)]:
+            with self.subTest(field=field):
+                self.assertEqual(self.state(dict(self.data, **{field: value}))[0], "failure")
+        for field, value in [("id", 1548), ("id", True), ("id", "1547"), ("base", "other"),
+                             ("state", "waiting"), ("state", "error"), ("state", "unknown")]:
+            data = copy.deepcopy(self.data)
+            data["requested_batch"][field] = value
+            with self.subTest(field=field, value=value):
+                self.assertEqual(self.state(data)[0], "failure")
+
+    def test_live_and_resumed_finalization_retire_withdrawal_without_any_status_request(self):
+        terminal_state = finalizer.terminal_state
+        for resume in (False, True):
+            with self.subTest(resume=resume), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "intent.json"
+                path.write_text(json.dumps(finalizer.finalization_intent(self.env)))
+                output = io.StringIO()
+                with patch.dict(os.environ, dict(self.env, TAUCETI_STATUS_INTENT=str(path)), clear=True), \
+                     patch.object(finalizer, "terminal_state",
+                                  side_effect=lambda env: terminal_state(env, observe=lambda *_: self.data)), \
+                     patch.object(finalizer, "api") as request, contextlib.redirect_stdout(output):
+                    args = ["--resume", str(path)] if resume else []
+                    self.assertEqual(finalizer.main(args), 0)
+                request.assert_not_called()
+                self.assertFalse(path.exists())
+                self.assertIn("batch withdrawn; no verdict posted", output.getvalue())
+
+    def test_withdrawal_during_status_retry_retires_existing_success_intent(self):
+        intent = finalizer.status_intent(self.env, dict(state="success", context="build",
+            description="audited", target_url="https://github.com/TauCetiProject/TauCeti/actions/runs/12"))
+        for resume in (False, True):
+            for conclusion in (None, "cancelled"):
+                with self.subTest(resume=resume, conclusion=conclusion), tempfile.TemporaryDirectory() as directory:
+                    path = Path(directory) / "intent.json"
+                    path.write_text(json.dumps(intent))
+                    with patch.object(finalizer, "observation", return_value=self.data), \
+                         patch.object(finalizer, "api", side_effect=[dict(run_attempt=2, conclusion=conclusion), []]) as request, \
+                         contextlib.redirect_stdout(io.StringIO()):
+                        self.assertEqual(finalizer.publish(intent, target=str(path), resume=resume), 0)
+                    self.assertEqual(request.call_count, 2)
+                    self.assertFalse(path.exists())
+
+    def test_real_build_and_publisher_failures_remain_failures(self):
+        observe = unittest.mock.Mock(side_effect=AssertionError("failed audits must remain failures"))
+        for result in ("failure", "cancelled", "skipped"):
+            env = dict(self.env, BUILD_JOB_RESULT=result)
+            self.assertEqual(finalizer.terminal_state(env, observe=observe)[0], "failure")
+        env = dict(self.env, PUBLICATION_REQUIRED="true")
+        wait = unittest.mock.Mock(return_value=("failure", "publication failed"))
+        self.assertEqual(finalizer.terminal_state(env, wait=wait, observe=observe),
+                         ("failure", "publication failed"))
 
 
 if __name__ == "__main__":
