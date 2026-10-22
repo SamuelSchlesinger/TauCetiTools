@@ -237,6 +237,12 @@ class RoutingEntrypoint(unittest.TestCase):
         self.assertEqual(output["pool"], "github")
         self.assertEqual(calls, [("state", "shared")])
 
+    def test_unexpired_two_minute_shared_snapshot_avoids_direct_reads(self):
+        snapshot=self.shared(observed_at=time.time()*1000-110000)
+        output,calls=self.pick(dict(state=dict(shared=snapshot)),GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"],"github")
+        self.assertEqual(calls,[("state","shared")])
+
     def test_v2_snapshot_enforces_namespace_cap_without_direct_discovery(self):
         snapshot = self.shared(routing_version=2, namespace_busy=20, queued_fleet=[])
         output, calls = self.pick(dict(state=dict(shared=snapshot)), GITHUB_STATE_TOKEN="state", FLEET_JOB_KIND="staging")
@@ -245,7 +251,7 @@ class RoutingEntrypoint(unittest.TestCase):
         self.assertEqual(calls, [("state", "shared")])
 
     def test_stale_wrong_org_invalid_and_oversized_shared_values_use_direct_fallback(self):
-        for changes in [dict(observed_at=0), dict(organization="Other"), dict(busy=True),
+        for changes in [dict(observed_at=0), dict(observed_at=time.time()*1000-160000), dict(organization="Other"), dict(busy=True),
                         dict(observed_at=float("nan")), dict(retry_at=0), dict(routing_version=2, namespace_busy=-1, queued_fleet=[])]:
             with self.subTest(changes=changes):
                 output, calls = self.pick(dict(state=dict(shared=self.shared(**changes)), app=self.fixture()), GITHUB_STATE_TOKEN="state")

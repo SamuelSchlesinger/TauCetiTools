@@ -423,7 +423,7 @@ export class InstallationScheduler extends DurableObject<Env> {
           const until=await this.ctx.storage.get<number>('secondary_until') || 0;
           if(until>Date.now() || this.usable('core')<=1500)throw new Error('capacity_quota_reserve');
           while(attempts.length && attempts[0]<Date.now()-3600000)attempts.shift();
-          if(attempts.length>=500)throw new Error('capacity_hourly_budget');
+          if(attempts.length>=2400)throw new Error('capacity_hourly_budget');
           // Persist before launching: a lost network response still consumes allowance.
           attempts.push(Date.now());await this.ctx.storage.put('runner-capacity-attempts',attempts);
           for(;;) {
@@ -434,7 +434,9 @@ export class InstallationScheduler extends DurableObject<Env> {
             }
           }
         });
-        const value={complete:true,organization,...snapshot,retry_at:Date.now()+30000,coverage:'organization_repository_inventory'};
+        // At most 30 scans/hour x 80 requests/scan fits the hourly allowance.
+        // Share observations on demand without adding a polling task.
+        const value={complete:true,organization,...snapshot,retry_at:Date.now()+120000,coverage:'organization_repository_inventory'};
         await this.ctx.storage.put(key,value);return value;
       } catch(error) {
         const value={complete:false,organization,reason:error instanceof QuotaDeferred?'capacity_deferred':error instanceof Error && error.message.startsWith('capacity_')?error.message:classify(error),retry_at:Math.max(Date.now()+120000,error instanceof QuotaDeferred?error.result.retry_at || 0:0)};
