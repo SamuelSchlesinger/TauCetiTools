@@ -21,7 +21,7 @@ async function query(req:Request,env:Env,q:Query,request_id:string): Promise<Res
   if (!await authorize(req,env)) return json({error:'unauthorized'},401);
   if (!repo || !await authorize(req,env,repo.name)) return json({version:1,repository:q.repository,operation:q.operation,status:'unavailable',revision:0,complete:false,reason:'repository_unavailable'});
   let response:Response;const started=Date.now();
-  try {response=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/query',{method:'POST',headers:{'If-None-Match':req.headers.get('If-None-Match') || '','x-request-id':request_id},body:JSON.stringify({...q,repository:repo.name})});}
+  try {response=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/query',{method:'POST',headers:{'If-None-Match':req.headers.get('If-None-Match') || '','x-request-id':request_id,'x-query-dispatched-at':String(started)},body:JSON.stringify({...q,repository:repo.name})});}
   catch(error) {
     const reason=classify(error);
     if (reason==='storage_full') await noteRepositoryFull(env,repo.id,'query',started).catch(()=>{});

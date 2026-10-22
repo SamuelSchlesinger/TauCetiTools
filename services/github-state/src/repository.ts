@@ -790,7 +790,10 @@ export class RepositoryState extends DurableObject<Env> {
     }
     // Receipt archival publishes R2 before deleting SQL. Recheck under writer
     // ownership so an archival race cannot reapply a committed old delivery.
-    if(await this.maintenanceArchive.head(receiptKey(configured.id,pointer.delivery)))return;
+    const receiptStarted=Date.now();
+    const archived=await this.maintenanceArchive.head(receiptKey(configured.id,pointer.delivery));
+    if(Date.now()-receiptStarted>=100)log('repository_receipt_slow',{elapsed_ms:Date.now()-receiptStarted,transactional:true});
+    if(archived)return;
     if((await this.store.exec('SELECT id FROM deliveries WHERE id=?',pointer.delivery)).toArray().length)return;
     if(this.degraded){if(this.degraded.reason!=='storage_full')throw Error('repository storage control unavailable');throw Error('Exceeded the maximum database size; SQLITE_FULL recorded at '+new Date(this.degraded.since).toISOString());}
     if(CI_EVENTS.has(pointer.event)){await this.store.exec('INSERT OR IGNORE INTO deliveries VALUES(?,?,?)',pointer.delivery,'ignored:'+pointer.event,Date.now());return;}
@@ -2577,6 +2580,9 @@ export class RepositoryState extends DurableObject<Env> {
       return json({error:reason,parkable:PARKABLE.has(reason),message:(error instanceof Error?error.message:'operation failed').slice(0,200),request_id},reason==='internal'?500:503);
     }finally {
       if(path==='/query')try {
+        const finished=Date.now(),dispatched=Number(req.headers.get('x-query-dispatched-at'));
+        if(finished-requestStarted>=250 || dispatched>0 && requestStarted-dispatched>=250)
+          log('repository_query_slow',{request_id,operation:requestOperation,handler_ms:finished-requestStarted,input_wait_ms:dispatched>0?Math.max(0,requestStarted-dispatched):null,error:requestError,unavailable:requestUnavailable});
         this.requestMetrics.record(Date.now()-requestStarted,requestError,requestUnavailable);
         if(requestOperation) {
           const coverage=requestError?'error':requestUnavailable?'unavailable':requestCoverage,key=JSON.stringify([requestOperation,coverage]);
