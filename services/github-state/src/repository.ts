@@ -920,10 +920,10 @@ export class RepositoryState extends DurableObject<Env> {
   }
   async stableQuery(q:Query):Promise<Result> {
     if(q.cursor)return this.query(q);
-    // Surveys discover candidate work. Repeating a full inventory whenever any
+    // Inventories discover candidate work. Repeating a full inventory whenever any
     // webhook advances the repository revision makes a busy repository appear
     // unavailable. Selected-PR reads retain the exact revision checks below.
-    if(q.operation==='survey')return this.query(q);
+    if(['survey','open_prs','open_issues'].includes(q.operation))return this.query(q);
     for(let attempt=0;attempt<3;attempt++) {
       const result=await this.query(q);
       const row=(await this.store.exec<any>("SELECT value FROM meta WHERE key='revision'")).toArray()[0];
@@ -2511,7 +2511,7 @@ export class RepositoryState extends DurableObject<Env> {
         const key=queryKey(q)+'|observed:'+Boolean(q.allow_observed)+'|'+(q.cursor || '');
         const cached=this.completedQueries.get(key);
         if (!q.cursor && cached && cached.expires>Date.now() &&
-          (cached.result.revision===(await this.revision()) || q.operation==='survey' && Date.now()-cached.built<10000)) {
+          (cached.result.revision===(await this.revision()) || ['survey','open_prs','open_issues'].includes(q.operation) && Date.now()-cached.built<10000)) {
           requestCoverage=cached.result.coverage || 'unknown';
           this.backgroundDemand(q);
           return json(cached.result,200,{ETag:'"'+cached.result.revision+'"',...headers});
@@ -2524,7 +2524,7 @@ export class RepositoryState extends DurableObject<Env> {
         let result:Result;
         try { result=await pending; }
         finally { if (this.inflightQueries.get(key)===pending) this.inflightQueries.delete(key); }
-        if (!q.cursor && result.status==='ok' && (q.operation==='survey' || result.revision===await this.revision())) {
+        if (!q.cursor && result.status==='ok' && (['survey','open_prs','open_issues'].includes(q.operation) || result.revision===await this.revision())) {
           this.completedQueries.delete(key);
           this.completedQueries.set(key,{result,expires:Date.now()+540000,built:Date.now()});
           while (this.completedQueries.size>16) this.completedQueries.delete(this.completedQueries.keys().next().value!);

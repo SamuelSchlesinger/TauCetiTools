@@ -19,7 +19,12 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
    return response({data:{rateLimit:{cost:1,remaining:4999,resetAt:new Date(Date.now()+300000).toISOString()},repository:repositoryData}});
   }
   return response(u.pathname.endsWith('/check-runs')?{check_runs:[]}:u.pathname.endsWith('/status')?{statuses:[]}:[], 'core');
- },{},process.env.TEST_POSTGRES_URL?{repositoryExtension:"async fetch(req){if(new URL(req.url).pathname==='/fixture/idle'){await this.alarmFlight;return Response.json({ok:true});}return super.fetch(req);}"}:{});
+ },{},{repositoryExtension:`async fetch(req){
+  const path=new URL(req.url).pathname;
+  if(path==='/fixture/idle'){await this.alarmFlight;return Response.json({ok:true});}
+  if(path==='/fixture/expire-discovery'){for(const entry of this.completedQueries.values())entry.built=Date.now()-10001;return Response.json({ok:true});}
+  return super.fetch(req);
+ }`});
  try{
   const namespace=await mf.getDurableObjectNamespace('REPOSITORIES'),stub=namespace.get(namespace.idFromName(repository.id));
   await send(stub,'/configure',{repository:repository.name});
@@ -67,6 +72,9 @@ test('large inventory snapshots paginate coherently and coalesce concurrent read
   }
   assert.equal(rows.length,count);assert.equal(new Set(rows.map(r=>r.number)).size,count);
   assert.equal(rows.find(r=>r.number===600).title,'PR 600');
+  // Discovery may reuse its prepared inventory for ten seconds during input
+  // churn. Force that existing expiry boundary without a ten-second sleep.
+  await send(stub,'/fixture/expire-discovery',{});
   const changed=await (await send(stub,'/query',query)).json();assert.ok(changed.revision>first.revision);
   console.log(JSON.stringify({fixture:'large_inventory',prs:count,initial_inventory_requests:inventoryRequests,concurrent_clients:10,pages,query_and_continuation_ms:Math.round(performance.now()-began)}));
  }finally{await mf.dispose();}
