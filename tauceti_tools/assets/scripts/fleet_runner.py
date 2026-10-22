@@ -170,7 +170,7 @@ def shared_capacity(repository, token):
         return type(n) in (int, float) and math.isfinite(n)
     if (value.get("complete") is not True or value.get("organization") != repository.split("/")[0]
             or type(value.get("busy")) is not int or not 0 <= value["busy"] <= 10000
-            or not numeric(value.get("observed_at")) or not -5000 <= now - value["observed_at"] <= 60000
+            or not numeric(value.get("observed_at")) or not -5000 <= now - value["observed_at"] <= 150000
             or not numeric(value.get("retry_at")) or value["retry_at"] <= now):
         raise ObservationError("incomplete or stale shared capacity")
     result = dict(github_busy=value["busy"], namespace_busy=None, queued_fleet=None)

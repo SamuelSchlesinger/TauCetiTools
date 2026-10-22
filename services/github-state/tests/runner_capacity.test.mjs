@@ -92,7 +92,7 @@ function schedulerFixture(){
 test('hourly allowance and lost responses survive refresh and cannot be bypassed by another caller',async()=>{
  const {scheduler,values}=schedulerFixture();let calls=0;
  scheduler.http=async()=>{calls++;throw new Error('connection lost')};
- values.set('runner-capacity-attempts',Array(2000).fill(Date.now()));
+ values.set('runner-capacity-attempts',Array(2400).fill(Date.now()));
  let result=await (await scheduler.runnerCapacity({name:'org/repo',installation:'200'})).json();
  assert.equal(result.reason,'capacity_hourly_budget');assert.equal(calls,0);
  values.delete('runner-capacity:org');values.delete('runner-capacity-attempts');
@@ -102,25 +102,27 @@ test('hourly allowance and lost responses survive refresh and cannot be bypassed
  await scheduler.runnerCapacity({name:'org/repo',installation:'200'});assert.equal(calls,1);
 });
 test('continuous callers reuse two-minute snapshots within the rolling hourly allowance',async()=>{
+ for(const repositories of [17,26]){
  const {scheduler,values}=schedulerFixture();let calls=0,clock=Date.now();const original=Date.now;
  Date.now=()=>clock;
  scheduler.http=async path=>{
   calls++;
-  if(path.startsWith('/orgs/'))return envelope(null,Array.from({length:17},(_,i)=>({name:'repo'+i,archived:false})));
+  if(path.startsWith('/orgs/'))return envelope(null,Array.from({length:repositories},(_,i)=>({name:'repo'+i,archived:false})));
   if(path.includes('/actions/runs?'))return envelope('workflow_runs',[{id:'1'}]);
   return envelope('jobs',[hosted]);
  };
  try {
-  // 52 requests per complete scan: close to the measured production cost.
+  // 52 requests per scan matches production; 79 exercises the 80-call bound.
   for(let minute=0;minute<60;minute++){
    const result=await (await scheduler.runnerCapacity({name:'org/repo',installation:'200'})).json();
-   assert.equal(result.complete,true);assert.equal(result.busy,17);
+   assert.equal(result.complete,true);assert.equal(result.busy,repositories);
    assert.equal(result.cached===true,minute%2===1);
    assert.ok(result.retry_at>clock);
    clock+=60000;
   }
-  assert.equal(calls,1560);assert.equal(values.get('runner-capacity-attempts').length,1560);
+  assert.equal(calls,30*(1+3*repositories));assert.equal(values.get('runner-capacity-attempts').length,calls);
  }finally{Date.now=original;}
+ }
 });
 test('brief contention for existing request slots yields and completes instead of caching an internal failure',async()=>{
  const {scheduler,setSlots}=schedulerFixture();const {read}=readFixture();const original=globalThis.fetch;

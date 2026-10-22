@@ -284,7 +284,7 @@ by all pickers. Picker, recovery, publication, and finalizer control jobs are
 excluded from the build count.
 
 Refresh uses existing installation quota accounting, honors secondary cooldowns,
-leaves at least 1,500 core requests for repository work, and spends at most 2,000
+leaves at least 1,500 core requests for repository work, and spends at most 2,400
 read attempts per rolling hour, including lost network responses on this operation. Brief request-slot
 contention yields within the scan deadline rather than invalidating the snapshot. A scan is bounded to
 80 requests, at most three simultaneous reads, and a 15-second launch window; individual requests retain their

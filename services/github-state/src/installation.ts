@@ -423,7 +423,7 @@ export class InstallationScheduler extends DurableObject<Env> {
           const until=await this.ctx.storage.get<number>('secondary_until') || 0;
           if(until>Date.now() || this.usable('core')<=1500)throw new Error('capacity_quota_reserve');
           while(attempts.length && attempts[0]<Date.now()-3600000)attempts.shift();
-          if(attempts.length>=2000)throw new Error('capacity_hourly_budget');
+          if(attempts.length>=2400)throw new Error('capacity_hourly_budget');
           // Persist before launching: a lost network response still consumes allowance.
           attempts.push(Date.now());await this.ctx.storage.put('runner-capacity-attempts',attempts);
           for(;;) {
@@ -434,8 +434,8 @@ export class InstallationScheduler extends DurableObject<Env> {
             }
           }
         });
-        // A busy organization needs roughly 50 requests per scan. Two minutes
-        // keeps continuous demand below the hourly allowance without polling.
+        // At most 30 scans/hour x 80 requests/scan fits the hourly allowance.
+        // Share observations on demand without adding a polling task.
         const value={complete:true,organization,...snapshot,retry_at:Date.now()+120000,coverage:'organization_repository_inventory'};
         await this.ctx.storage.put(key,value);return value;
       } catch(error) {
