@@ -260,17 +260,26 @@ export async function maintainRaw(env: Env, targets: (payload: any, event: strin
   let examined=0,deleted=0,bytes=0;
   try {
     for(let pages=0;pages<20 && Date.now()-began<20000;pages++) {
-      const page = await env.ARCHIVE.list({ prefix: 'webhooks/', startAfter: state.after, limit: 50, include: ['customMetadata'] });
+      const page = await env.ARCHIVE.list({ prefix: 'webhooks/', startAfter: state.after, limit: 1000, include: ['customMetadata'] });
       let processed = 0;
-      const expired:R2Object[]=[];
+      const expired:R2Object[]=[],ciGaps:string[]=[];
       for (const raw of page.objects) {
         if (Date.now() - began >= 20000) break;
         const gapKey = 'control/raw-gaps/' + raw.key.slice(raw.key.lastIndexOf('/') + 1);
+        const expiredRaw = !protectedObject(raw.key,raw.customMetadata) && Number(raw.customMetadata?.expires)<Date.now();
+        // Unmirrored CI deliveries need no recovery, so the listed metadata
+        // decides without gap, receipt or body reads; any earlier gap is resolved.
+        if (CI_EVENTS.has(raw.customMetadata?.event ?? '')) {
+          ciGaps.push(gapKey);
+          if (expiredRaw) expired.push(raw);
+          processed++; examined++; state.after = raw.key;
+          continue;
+        }
         const gap: any = await env.ARCHIVE.get(gapKey).then(o=>o?.json());
         if (!gap || gap.retry_at <= Date.now()) {
           try {
             await retainRaw(env, raw, targets);
-            if(!protectedObject(raw.key,raw.customMetadata) && Number(raw.customMetadata?.expires)<Date.now())expired.push(raw);
+            if(expiredRaw)expired.push(raw);
             if (gap) await env.ARCHIVE.delete(gapKey);
           } catch (error) {
             const failures = (gap?.failures || 0) + 1;
@@ -279,6 +288,7 @@ export async function maintainRaw(env: Env, targets: (payload: any, event: strin
         }
         processed++; examined++; state.after = raw.key;
       }
+      if(ciGaps.length)await env.ARCHIVE.delete(ciGaps);
       // Read policies/fences once per page immediately before its batch
       // deletion. Recovery input has already been pinned or dispositioned.
       if(expired.length) {
