@@ -7,6 +7,22 @@ is stored-read compatibility and durable parked ingress. S1
 Neon PostgreSQL backend. Both must be deployed and accepted before production
 start. Merging code or closing an issue does not prove deployed acceptance.
 
+The [2026-10-22 test checkpoint](../services/github-state/validation/migration-test-checkpoint-2026-10-22.json)
+records a verified import of all twenty tables and PostgreSQL selection. Replay
+and final client, cursor, latency and request-rate acceptance remain incomplete;
+the checkpoint is not a release receipt and does not authorize production cutover.
+It preserves the original source identity and baseline, records the reviewed code
+updates separately, and records a hold after external test deployments changed
+the running artifact. Stopping the external operator initially left scheduled
+recovery running under unaccepted code against authoritative PostgreSQL. The
+checkpoint records that interval and the later durable ingress pause, which
+blocks webhook application and parked replay while accepting signed input into
+R2. Raw recovery continues after this pause, including R2 cursor and CI/non-CI
+gap-marker changes; its unaccepted-code interval remains open. Interval receipts,
+cleanup and CI gap disposition require accounting before adoption or final
+release; a lower raw-gap count is not delivery proof. Test ingress resumes only
+after the accepted live version and single PostgreSQL owner are reverified.
+
 ## Preparation and commands
 
 The admin command defaults to verification. Environment selection is mandatory.
