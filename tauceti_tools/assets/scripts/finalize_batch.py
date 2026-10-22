@@ -314,7 +314,10 @@ def publish(intent, *, target=None, resume=False):
                 print("::notice::newer run already published build status; obsolete intent discarded", flush=True)
                 discard_intent(target)
                 return 0 if resume else 1
-            if payload["state"] == "success" and intent.get("bors"):
+            canceled = latest.get("conclusion") == "cancelled"
+            if canceled:
+                payload.update(state="failure", description="batch workflow was canceled; redispatch current batch")
+            if intent["payload"]["state"] == "success" and intent.get("bors"):
                 bors = intent["bors"]
                 # A staging generation can become obsolete without this run
                 # acquiring a new attempt. Revalidate after every quota wait.
@@ -322,14 +325,17 @@ def publish(intent, *, target=None, resume=False):
                     observed = observation(bors["batch_id"], bors["base_ref"])
                     if confirmed_withdrawal(observed, batch_id=bors["batch_id"], branch=bors["base_ref"]):
                         return finish_withdrawal(target)
-                    candidate_ref(observed, revision, bors["base_sha"],
-                                  batch_id=bors["batch_id"], branch=bors["base_ref"])
+                    if not canceled:
+                        candidate_ref(observed, revision, bors["base_sha"],
+                                      batch_id=bors["batch_id"], branch=bors["base_ref"])
                 except (ValueError, KeyError, TypeError):
-                    print("::notice::obsolete or unconfirmed bors generation will not publish success", flush=True)
-                    discard_intent(target)
-                    return 0 if resume else 1
-            if latest.get("conclusion") == "cancelled":
-                payload.update(state="failure", description="batch workflow was canceled; redispatch current batch")
+                    if not canceled:
+                        print("::notice::obsolete or unconfirmed bors generation will not publish success", flush=True)
+                        discard_intent(target)
+                        return 0 if resume else 1
+                except OSError:
+                    if not canceled:
+                        raise
             api(f"/statuses/{revision}", payload)
             discard_intent(target)
             print(f"Posted build={payload['state']} on {revision}: {payload['description']}", flush=True)

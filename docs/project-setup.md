@@ -1011,7 +1011,7 @@ the pending finalization or success intent without posting a red or green
 `build` commit status. This is a completed finalizer job, not a successful build
 verdict for the withdrawn batch. Missing, malformed or unavailable Bors responses
 do not prove withdrawal; real build and cache publication failures retain their
-failure behavior.
+failure behavior, including a sandbox build that was canceled before completion.
 
 Review upgrades as configuration/workflow PRs. Update common pins and their literal callers
 together. Never point unfinished publication records at a new destination during an upgrade.

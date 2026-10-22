@@ -135,10 +135,8 @@ class Withdrawn(unittest.TestCase):
         self.env = dict(ENV, BUILD_JOB_RESULT="success", BUILD_STATE="success",
                         BORS_STAGING="true", BORS_BATCH_ID="1547", BORS_BASE_REF="main",
                         BORS_BASE_SHA="b" * 40)
-        # Bors clears the commit/train on withdrawal, retaining the exact batch ID.
-        self.data = dict(schema="tauceti-bors.observation/v1", repo=finalizer.REPO, base="main",
-                         requested_batch=dict(id=1547, base="main", state="canceled",
-                                              head_sha=None, base_sha="b" * 40, train=None))
+        # Captured scoped fields from the public Bors endpoint for withdrawn batch 1547.
+        self.data = json.loads((Path(__file__).parent / "fixtures/withdrawn-batch1547.json").read_text())
 
     def state(self, data):
         return finalizer.terminal_state(self.env, observe=lambda *_: data)
@@ -155,6 +153,13 @@ class Withdrawn(unittest.TestCase):
             data["requested_batch"][field] = value
             with self.subTest(field=field, value=value):
                 self.assertEqual(self.state(data)[0], "failure")
+
+    def test_captured_response_passes_the_real_observation_parser(self):
+        response = io.BytesIO(json.dumps(self.data).encode())
+        with patch("bors_observation.urllib.request.urlopen", return_value=response) as request:
+            self.assertEqual(finalizer.terminal_state(self.env),
+                             ("withdrawn", "batch withdrawn; no verdict posted"))
+        self.assertIn("base=main&batch_id=1547", request.call_args.args[0].full_url)
 
     def test_live_and_resumed_finalization_retire_withdrawal_without_any_status_request(self):
         terminal_state = finalizer.terminal_state
@@ -197,6 +202,17 @@ class Withdrawn(unittest.TestCase):
         wait = unittest.mock.Mock(return_value=("failure", "publication failed"))
         self.assertEqual(finalizer.terminal_state(env, wait=wait, observe=observe),
                          ("failure", "publication failed"))
+
+    def test_canceled_run_with_invalid_or_unavailable_bors_still_posts_failure(self):
+        intent = finalizer.status_intent(self.env, dict(state="success", context="build",
+            description="audited", target_url="https://github.com/TauCetiProject/TauCeti/actions/runs/12"))
+        for data in (None, dict(self.data, repo="other/repo"), OSError("unavailable")):
+            observation = dict(side_effect=data) if isinstance(data, Exception) else dict(return_value=data)
+            with self.subTest(data=data), patch.object(finalizer, "observation", **observation), \
+                 patch.object(finalizer, "api", side_effect=[dict(run_attempt=2, conclusion="cancelled"), [], {}]) as request, \
+                 contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(finalizer.publish(intent), 1)
+            self.assertEqual(request.call_args.args[1]["state"], "failure")
 
 
 if __name__ == "__main__":
