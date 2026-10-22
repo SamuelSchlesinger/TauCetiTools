@@ -2478,10 +2478,35 @@ export class RepositoryState extends DurableObject<Env> {
       // A genuinely missing schema is a precise error, not empty data.
       if (typeof this.schema==='object' && path!=='/health') return json({error:this.schema.error,missing:this.schema.missing,cause:this.schema.cause,parkable:true,request_id},503);
       if (path==='/configure') { await this.configure((await req.json() as any).repository); return json({ok:true}); }
+      if (path==='/ci-receipts') {
+        // Old parked CI input predates the decision not to mirror these events.
+        // Commit its existing ignored-delivery disposition in one fenced batch;
+        // the ingress owner still publishes each R2 receipt before cleanup.
+        const input:any=await req.json(),repo=repository(this.env,input?.repository);
+        if(!repo || this.env.REPOSITORIES.idFromName(repo.id).toString()!==this.ctx.id.toString())return json({error:'invalid_ci_receipts'},400);
+        if(!Array.isArray(input.events) || !input.events.length || input.events.length>100 || input.events.some((p:any)=>!p || typeof p.delivery!=='string' || !/^[a-zA-Z0-9-]{1,100}$/.test(p.delivery) || !CI_EVENTS.has(p.event) || !Number.isSafeInteger(p.received) || p.received<0))return json({error:'invalid_ci_receipts'},400);
+        const events=new Map<string,any>();
+        for(const p of input.events){if(events.has(p.delivery) && events.get(p.delivery).event!==p.event)return json({error:'invalid_ci_receipts'},400);events.set(p.delivery,p);}
+        if(this.storageMarkerUnavailable)return json({error:'storage_control_unavailable',parkable:true,request_id},503);
+        if(this.ingress===undefined){const mode=(await this.env.ARCHIVE.get(controlKey(repo.id)).then(o=>o?.json<any>()))?.mode ?? 'apply';this.ingress ??= mode;}
+        if(this.ingress==='parked')return json({error:'ingress_parked',parkable:true,request_id},503);
+        if(this.degraded)return json({error:this.degraded.reason==='storage_full'?'storage_full':'storage_control_unavailable',parkable:true,request_id},503);
+        this.applying++;
+        try {
+          const now=Date.now(),rows=[...events.values()];
+          await this.atomic(async state=>{
+            const size=state.store.backend==='sqlite'?33:100;
+            for(let start=0;start<rows.length;start+=size){const batch=rows.slice(start,start+size);await state.store.exec('INSERT OR IGNORE INTO deliveries VALUES '+batch.map(()=>'(?,?,?)').join(','),...batch.flatMap(p=>[p.delivery,'ignored:'+p.event,now]));}
+          });
+          if(this.store.backend==='sqlite')await this.ctx.storage.sync();
+          this.inputFailure=undefined;
+        }finally{this.applying--;}
+        return json({committed:[...events.keys()]});
+      }
       if (path==='/event') {
         const pointer=await req.json() as EventPointer,repo=repository(this.env,pointer.repository);
         if(this.storageMarkerUnavailable)return json({error:'storage_control_unavailable',parkable:true,request_id},503);
-        if (this.ingress===undefined && repo) this.ingress=(await this.env.ARCHIVE.get(controlKey(repo.id)).then(o=>o?.json<any>()))?.mode ?? 'apply';
+        if (this.ingress===undefined && repo) {const mode=(await this.env.ARCHIVE.get(controlKey(repo.id)).then(o=>o?.json<any>()))?.mode ?? 'apply';this.ingress ??= mode;}
         if (this.ingress==='parked') return json({error:'ingress_parked',parkable:true,request_id},503);
         if(!repo) throw new Error('repository not allowed');
         let flight=this.deliveryFlights.get(pointer.delivery);

@@ -1209,3 +1209,113 @@ test('test-migration constructor waits for a full marker before attempting a leg
   assert.equal(reset.state.schema,'migration_pending');assert.ok(reset.state.degraded);
  }finally{db.close();}
 });
+
+test('parked CI receipts batch without semantic changes and survive response/cleanup crashes',async()=>{
+ const f=repositoryFixture();await f.ready;
+ let batches=0,individual=0,lost=true;
+ const namespace={idFromName:()=>({toString:()=>f.state.ctx.id.toString()}),get:()=>({fetch:async(url,init)=>{
+  const path=new URL(url).pathname;
+  if(path==='/ci-receipts')batches++;else if(path==='/event')individual++;
+  const response=await f.state.fetch(new Request(url,init));
+  if(path==='/ci-receipts'&&response.ok&&lost){lost=false;throw Error('response lost after committed batch');}
+  return response;
+ }})};
+ f.state.env.REPOSITORIES=namespace;
+ const env={ALLOWED_REPOSITORIES:JSON.stringify([repo]),ARCHIVE:f.archive,REPOSITORIES:namespace},now=Date.now(),items=[];
+ for(let i=0;i<25;i++){
+  const p={repository:repo.name,delivery:'old-ci-'+i,event:i%2?'check_run':'workflow_job',received:now-10000+i,key:'webhooks/ci/'+i};
+  await f.archive.put(p.key,'{}');await ingress.park(env,repo,p,'migration');items.push(p);
+ }
+ const waiting=items.at(-1),waitingKey=ingress.pointerKey(repo.id,waiting),value=await(await f.archive.get(waitingKey)).json();
+ await f.archive.put(waitingKey,JSON.stringify({...value,retry_at:now+600000}));
+ f.archive.failures.push((op,key)=>op==='put'&&key===ingress.receiptKey(repo.id,'old-ci-0'));
+ f.archive.failures.push((op,key)=>op==='delete'&&key===ingress.bodyKey(repo.id,'old-ci-1'));
+ const revision=await f.state.revision(),first=await ingress.drain(env,repo,{limit:100});
+ assert.equal(batches,1);assert.ok(individual>0,'response loss uses existing deduplication');
+ assert.equal(first.failed,2);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,24);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM changes').get().n,0);assert.equal(await f.state.revision(),revision);
+ for(const p of items.slice(0,-1))assert.equal(f.db.prepare('SELECT event FROM deliveries WHERE id=?').get(p.delivery).event,'ignored:'+p.event);
+ assert.ok(await f.archive.get(ingress.bodyKey(repo.id,'old-ci-0')),'SQL commit alone cannot release the body before R2 receipt publication');
+ assert.ok(await f.archive.get(ingress.pointerKey(repo.id,items[1])),'cleanup interruption retains the pointer');
+ assert.equal(await f.archive.get(ingress.receiptKey(repo.id,waiting.delivery)),null);
+ for(const p of items.slice(0,-1)){const key=ingress.pointerKey(repo.id,p),o=await f.archive.get(key);if(o){const v=await o.json();await f.archive.put(key,JSON.stringify({...v,retry_at:0}));}}
+ const second=await ingress.drain(env,repo,{limit:100});assert.equal(second.failed,0);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,24);
+ for(const p of items.slice(0,-1)){assert.ok(await f.archive.get(ingress.receiptKey(repo.id,p.delivery)));assert.equal(await f.archive.get(ingress.pointerKey(repo.id,p)),null);assert.equal(await f.archive.get(ingress.bodyKey(repo.id,p.delivery)),null);}
+ assert.ok(await f.archive.get(waitingKey));assert.equal(await f.state.revision(),revision);
+});
+
+test('CI receipt endpoint rejects semantic input, wrong object, paused ingress and source fence',async()=>{
+ const f=repositoryFixture();await f.ready;f.state.env.REPOSITORIES={idFromName:()=>({toString:()=>f.state.ctx.id.toString()})};
+ const send=body=>f.state.fetch(new Request('https://internal/ci-receipts',{method:'POST',body:JSON.stringify(body)})),event={delivery:'bounded-ci',event:'workflow_run',received:Date.now()},input={repository:repo.name,events:[event]};
+ for(const events of[[],Array(101).fill(event),[{...event,event:'issue_comment'}],[{...event,received:1.5}],[{...event,delivery:'bad/id'}],[event,{...event,event:'check_run'}]])assert.equal((await send({...input,events})).status,400);
+ f.state.env.REPOSITORIES={idFromName:()=>({toString:()=>'other-object'})};assert.equal((await send(input)).status,400);
+ f.state.env.REPOSITORIES={idFromName:()=>({toString:()=>f.state.ctx.id.toString()})};
+ f.state.ingress='parked';assert.equal((await send(input)).status,503);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,0);
+ f.state.ingress='apply';f.state.migrationState={phase:'exporting'};assert.equal((await send(input)).status,503);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,0);
+ f.state.migrationState=null;assert.equal((await send(input)).status,200);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,1);
+ assert.equal((await send(input)).status,200);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,1);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM changes').get().n,0);
+});
+
+test('CI batches respect SQLite bindings, storage refusal and an in-flight ingress pause',async()=>{
+ const f=repositoryFixture();await f.ready;
+ f.state.env.REPOSITORIES={idFromName:()=>({toString:()=>f.state.ctx.id.toString()})};
+ const events=Array.from({length:100},(_,i)=>({delivery:'bounded-'+i,event:'workflow_run',received:Date.now()}));
+ const send=()=>f.state.fetch(new Request('https://internal/ci-receipts',{method:'POST',body:JSON.stringify({repository:repo.name,events})}));
+ for(const reason of ['storage_full','storage_error']){
+  f.state.degraded={since:Date.now(),reason};const response=await send();
+  assert.equal(response.status,503);assert.equal((await response.json()).parkable,true);
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,0);
+ }
+ f.state.degraded=undefined;f.state.inputFailure={at:Date.now(),reason:'old_failure'};
+ const exec=f.state.ctx.storage.sql.exec;let largest=0;
+ f.state.ctx.storage.sql.exec=(sql,...bindings)=>{largest=Math.max(largest,bindings.length);assert.ok(bindings.length<=100);return exec(sql,...bindings);};
+ let release,entered;const gate=new Promise(r=>release=r),syncing=new Promise(r=>entered=r);
+ f.state.ctx.storage.sync=async()=>{entered();await gate;};
+ const batch=send();await syncing;
+ assert.equal(f.state.applying,1);let paused=false;
+ const pause=f.state.fetch(new Request('https://internal/storage/ingress',{method:'POST',body:JSON.stringify({mode:'parked'})})).then(async r=>{paused=true;return r.json();});
+ await new Promise(r=>setTimeout(r,75));assert.equal(paused,false,'pause must wait through durable sync');
+ release();assert.equal((await batch).status,200);
+ assert.deepEqual(await pause,{mode:'parked',in_flight:0,drained:true});
+ assert.equal(f.state.inputFailure,undefined);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,100);
+ assert.equal(largest,99);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM changes').get().n,0);
+});
+
+test('a late ingress-control read cannot undo a completed pause',async()=>{
+ for(const path of ['/ci-receipts','/event']){
+  const f=repositoryFixture();await f.ready;f.state.ingress=undefined;
+  f.state.env.REPOSITORIES={idFromName:()=>({toString:()=>f.state.ctx.id.toString()})};
+  let release,entered;const gate=new Promise(r=>release=r),reading=new Promise(r=>entered=r),get=f.archive.get;
+  f.archive.get=async key=>{if(key==='control/100/ingress.json'){entered();await gate;return{json:async()=>({mode:'apply'})};}return get(key);};
+  const event={delivery:'late-control',event:'check_run',received:Date.now()},body=path==='/event'?{...event,repository:repo.name,key:'unused'}:{repository:repo.name,events:[event]};
+  const pending=f.state.fetch(new Request('https://internal'+path,{method:'POST',body:JSON.stringify(body)}));
+  await reading;
+  const pause=await f.state.fetch(new Request('https://internal/storage/ingress',{method:'POST',body:JSON.stringify({mode:'parked'})}));
+  assert.equal((await pause.json()).drained,true);release();
+  assert.equal((await pending).status,503);assert.equal(f.state.ingress,'parked');
+  assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,0);
+ }
+});
+
+test('CI replay survives an old actor and a deadline immediately after batch commit',async()=>clock(async advance=>{
+ const f=repositoryFixture();await f.ready;let oldActor=true,expire=false,batches=0,individual=0;
+ const namespace={idFromName:()=>({toString:()=>f.state.ctx.id.toString()}),get:()=>({fetch:async(url,init)=>{
+  const path=new URL(url).pathname;
+  if(path==='/ci-receipts'){batches++;if(oldActor)return new Response(null,{status:404});}else if(path==='/event')individual++;
+  const response=await f.state.fetch(new Request(url,init));
+  if(path==='/ci-receipts' && expire){expire=false;advance(2000);}
+  return response;
+ }})};f.state.env.REPOSITORIES=namespace;
+ const env={ALLOWED_REPOSITORIES:JSON.stringify([repo]),ARCHIVE:f.archive,REPOSITORIES:namespace};
+ const park=async delivery=>{const p={repository:repo.name,delivery,event:'check_run',received:Date.now(),key:'webhooks/'+delivery};await f.archive.put(p.key,'{}');await ingress.park(env,repo,p,'migration');return p;};
+ const old=await park('old-actor');assert.equal((await ingress.drain(env,repo)).replayed,1);
+ assert.equal(individual,1);assert.equal((await(await f.archive.get(ingress.receiptKey(repo.id,old.delivery))).json()).disposition,'not_mirrored');
+ oldActor=false;const pending=await park('deadline-commit');expire=true;
+ const first=await ingress.drain(env,repo,{deadline:Date.now()+1000});assert.equal(first.stopped,'deadline');assert.equal(first.replayed,0);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries WHERE id=?').get(pending.delivery).n,1);
+ assert.ok(await f.archive.get(ingress.pointerKey(repo.id,pending)));assert.ok(await f.archive.get(ingress.bodyKey(repo.id,pending.delivery)));
+ assert.equal(await f.archive.get(ingress.receiptKey(repo.id,pending.delivery)),null);
+ assert.equal((await ingress.drain(env,repo)).replayed,1);assert.equal(batches,3);assert.equal(individual,1);
+ assert.equal(f.db.prepare('SELECT COUNT(*) n FROM deliveries').get().n,2);assert.equal(f.db.prepare('SELECT COUNT(*) n FROM changes').get().n,0);
+ assert.equal(await f.archive.get(ingress.pointerKey(repo.id,pending)),null);
+}));

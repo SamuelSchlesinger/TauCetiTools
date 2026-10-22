@@ -94,8 +94,26 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
   const prefix = `parked/${repo.id}/${options.held ? 'held' : 'pointers'}/`;
   const page = await env.ARCHIVE.list({ prefix, limit: Math.min(Math.max(1, options.limit || 25), 100), startAfter: options.cursor });
   let replayed = 0, failed = 0, stopped: string | undefined, last_error: string | undefined, next_retry: number | undefined;
+  const prepared=new Map<string,Parked|null>(),ciCommitted=new Set<string>();let batchStatus:number|string|null=null;
+  // Compact pointers only: never load their webhook bodies into this batch.
+  // A crash after SQL commits leaves the pointers replayable and deduplicated.
+  for(let i=0;i<page.objects.length && Date.now()<(options.deadline || Infinity);i+=REPLAY_GROUP)await Promise.all(page.objects.slice(i,i+REPLAY_GROUP).map(async object=>{
+    try{prepared.set(object.key,await env.ARCHIVE.get(object.key).then(o=>o?.json<Parked>() ?? null));}catch{/* The ordinary per-pointer path records/retries this failure. */}
+  }));
+  const ciByDelivery=new Map<string,Parked>(),conflicts=new Set<string>();
+  for(const p of prepared.values())if(p && p.repository===repo.name && CI_EVENTS.has(p.event) && /^[a-zA-Z0-9-]{1,100}$/.test(p.delivery) && Number.isSafeInteger(p.received) && p.received>=0 && (p.retry_at || 0)<=Date.now()){
+    if(ciByDelivery.has(p.delivery) && ciByDelivery.get(p.delivery)!.event!==p.event)conflicts.add(p.delivery);
+    else ciByDelivery.set(p.delivery,p);
+  }
+  const ci=[...ciByDelivery.values()].filter(p=>!conflicts.has(p.delivery));
+  if(ci.length && Date.now()<(options.deadline || Infinity))try{
+    const response=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/ci-receipts',{method:'POST',body:JSON.stringify({repository:repo.name,events:ci.map(({delivery,event,received})=>({delivery,event,received}))})});
+    batchStatus=response.status;
+    const result:any=response.ok?await response.json():null;
+    if(Array.isArray(result?.committed) && ci.every(p=>result.committed.includes(p.delivery)))for(const p of ci)ciCommitted.add(p.delivery);
+  }catch{batchStatus='transport_error';/* A lost batch response safely falls back to ordinary delivery deduplication. */}
   const replay = async (object: R2Object): Promise<void> => {
-    const parked = await env.ARCHIVE.get(object.key).then(o => o?.json<Parked>());
+    const parked = prepared.has(object.key)?prepared.get(object.key):await env.ARCHIVE.get(object.key).then(o => o?.json<Parked>());
     if (!parked) return;
     last_error ||= parked.last_error;
     if (parked.retry_at) next_retry = Math.min(next_retry || Infinity, parked.retry_at);
@@ -104,20 +122,21 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
     let reason = 'internal';
     try {
       // A durable receipt also covers SQL receipt expiry and crashes during cleanup.
-      const committed = await env.ARCHIVE.head(receiptKey(repo.id, parked.delivery));
+      const committed = !ciCommitted.has(parked.delivery) && await env.ARCHIVE.head(receiptKey(repo.id, parked.delivery));
       if (!committed) {
-        const response = await stub(env.REPOSITORIES, repo.id).fetch('https://internal/event', { method: 'POST', body: JSON.stringify({ key: parked.key, delivery: parked.delivery, event: parked.event, repository: parked.repository, received: parked.received }) });
-        if (!response.ok) {
-          const error: any = await response.json().catch(() => ({}));
-          reason = String(error.message === 'event body unavailable' ? 'event_body_unavailable' : error.error || response.status);
-          if (reason === 'storage_full') await noteRepositoryFull(env, repo.id, 'replay', started);
-          if (error.parkable) {stopped = reason; return;}
-          throw new Error(reason);
+        if(!ciCommitted.has(parked.delivery)) {
+          const response = await stub(env.REPOSITORIES, repo.id).fetch('https://internal/event', { method: 'POST', body: JSON.stringify({ key: parked.key, delivery: parked.delivery, event: parked.event, repository: parked.repository, received: parked.received }) });
+          if (!response.ok) {
+            const error: any = await response.json().catch(() => ({}));
+            reason = String(error.message === 'event body unavailable' ? 'event_body_unavailable' : error.error || response.status);
+            if (reason === 'storage_full') await noteRepositoryFull(env, repo.id, 'replay', started);
+            if (error.parkable) {stopped = reason; return;}
+            throw new Error(reason);
+          }
         }
-        await env.ARCHIVE.put(receiptKey(repo.id, parked.delivery), JSON.stringify({ delivery: parked.delivery, committed_at: Date.now() }));
+        await env.ARCHIVE.put(receiptKey(repo.id, parked.delivery), JSON.stringify({ delivery: parked.delivery, committed_at: Date.now(),...(CI_EVENTS.has(parked.event)?{disposition:'not_mirrored'}:{}) }));
       }
-      await env.ARCHIVE.delete(parked.key);
-      await env.ARCHIVE.delete(object.key);
+      await env.ARCHIVE.delete([parked.key,object.key]);
       replayed++;
       return;
     } catch (error) {
@@ -144,7 +163,7 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
     visited += group.length;
   }
   if(!stopped && visited<page.objects.length)stopped='deadline';
-  return { replayed, failed, last_error, next_retry, cursor: visited < page.objects.length || page.truncated ? (page.objects[visited-1]?.key || options.cursor) : undefined, remaining: Boolean(stopped) || page.truncated || replayed < page.objects.length, ...(stopped ? { stopped } : {}) };
+  return { replayed, failed, batched:ciCommitted.size, batch_status:batchStatus, last_error, next_retry, cursor: visited < page.objects.length || page.truncated ? (page.objects[visited-1]?.key || options.cursor) : undefined, remaining: Boolean(stopped) || page.truncated || replayed < page.objects.length, ...(stopped ? { stopped } : {}) };
 }
 
 // Status is a fixed number of R2 reads. Counts are bounded observations, not
