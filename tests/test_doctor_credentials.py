@@ -140,6 +140,13 @@ class CredentialChecks(unittest.TestCase):
         self.assertIn("Finish", output.getvalue())
         self.assertNotIn("--fix roadmap.workflows", output.getvalue())
 
+    def test_new_content_package_waits_for_workflow_helpers(self):
+        del self.responses["repos/one/Project/contents/lakefile.toml?ref=main"]
+        del self.responses["repos/one/Project/contents/.github/workflows/pr-build.yml?ref=main"]
+        rows = self.fixture.findings()
+        self.assertIn("Finish Project files and workflows first", " ".join(rows["lean.content"].steps))
+        self.assertNotIn("$ lake build", " ".join(rows["lean.content"].steps))
+
 
 if __name__ == "__main__":
     unittest.main()

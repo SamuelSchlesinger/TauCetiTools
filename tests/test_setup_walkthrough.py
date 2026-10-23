@@ -39,6 +39,8 @@ class SetupWalkthrough(unittest.TestCase):
         fixture = setup.DoctorSetupTests()
         fixture.setUp()
         fixture.publish_package("one/Project")
+        fixture.responses["repos/one/Project/contents/.github/workflows/pr-build.yml?ref=main"] = {
+            "size": 20}
         rows = fixture.findings()
         for role, directories in (("content", ["Project"]), ("roadmap", ["ProjectRoadmap", "Completed"])):
             with self.subTest(role=role), tempfile.TemporaryDirectory() as tmp:

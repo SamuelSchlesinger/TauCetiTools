@@ -599,12 +599,15 @@ def _setup_order(findings):
         first = []
         if finding.id.startswith("files.") and finding.repair == "workflows":
             first = [name for name in ("repositories.content", "pins.tools", "pins.review") if not ready(name)]
+        elif finding.id == "lean.content":
+            first = [name for name in ("files..github/workflows/pr-build.yml",) if not ready(name)]
         elif finding.id == "roadmap.workflows":
             first = [name for name in ("pins.tools", "files.tauceti.toml", "lean.roadmap") if not ready(name)]
         elif finding.id == "rules.content":
             first = [name for name in ("files..github/workflows/pr-build.yml",) if not ready(name)]
         if first and finding.status != "ready":
-            finding.steps = ["Finish " + ", ".join(_label(name) for name in first) + " first, then run doctor again for this step's instructions."]
+            published = finding.steps[:1] if finding.id.startswith("lean.") else []
+            finding.steps = published + ["Finish " + ", ".join(_label(name) for name in first) + " first, then run doctor again for this step's instructions."]
             finding.commands = []
             finding.repair = ""
         if finding.id.startswith(("pins.", "lean.", "files.", "configuration.")) or finding.id == "roadmap.workflows":
@@ -613,6 +616,11 @@ def _setup_order(findings):
             finding.role = "Maintainer with access to Actions runs"
         elif finding.id.startswith("repositories."):
             finding.role = "Repository owner or maintainer with access"
+    order = {section: index for index, section in enumerate((
+        "repositories", "configuration-and-ownership", "versions", "actions", "workflows",
+        "apps-and-credentials", "lean-and-upstream-dependencies", "roadmap-lean-package",
+        "roadmaps", "verification", "branch-rules"))}
+    findings.sort(key=lambda finding: order.get(finding.section, len(order)))
 
 
 def merge_findings(project, gh, again):
@@ -734,6 +742,7 @@ def merge_findings(project, gh, again):
         "\n".join(problems + unknown) or ("Bors merge settings and scope override configured" if bors else
                                          "Merge queue, required checks and administrator override configured"),
         "Bors with bors merge scope overrides" if bors else "GitHub merge queue with administrator scope overrides",
+        role="Repository administrator; GitHub App manager for Bors App permissions" if bors else "Repository administrator",
         commands=[_cmd("gh", "api", endpoint)], urls=[f"https://github.com/{repo}/settings/rules"],
         steps=steps, verify=again, section="branch-rules")]
 

@@ -151,6 +151,7 @@ class DoctorSetupTests(unittest.TestCase):
                 self.assertEqual((Path(tmp) / "lean-toolchain").read_text(), "leanprover/lean4:v4.test\n")
 
     def test_gitignore_instruction_preserves_rules_and_excludes_lake_artifacts(self):
+        self.publish_package("one/Project")
         steps = self.findings()["lean.content"].steps
         command, = [line[2:] for step in steps for line in step.splitlines() if line.startswith("$ git check-ignore")]
         with tempfile.TemporaryDirectory() as tmp:

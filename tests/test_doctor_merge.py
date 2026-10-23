@@ -129,6 +129,7 @@ class MergeSetupTests(unittest.TestCase):
         finding = self.finding()
         self.assertEqual(finding.status, "ready", finding.summary)
         self.assertIn("bors merge", " ".join(finding.steps))
+        self.assertIn("GitHub App manager", finding.role)
         self.actors[0]["bypass_mode"] = "pull_request"
         self.assertIn("Always allow", self.finding().summary)
         self.actors[0]["bypass_mode"] = "always"
