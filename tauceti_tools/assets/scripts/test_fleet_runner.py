@@ -57,14 +57,14 @@ class Selection(unittest.TestCase):
         result = ranked_runners(pages, kind="staging", machines=machines, reserved=[2, 3])
         self.assertEqual([r["runner_id"] for r in result], [1])
 
-    def test_different_runs_spread_across_idle_guests_and_unknown_queue_inventory_disables_fleet(self):
+    def test_different_runs_spread_across_idle_guests_despite_unknown_optional_queue_inventory(self):
         machines, pages = self.ranked_fixture()
         def select(key, queued):
             return route(kind="pr", order=["chris", "namespace", "github"], machines={m["name"]: m for m in machines},
                          runner_pages=pages, observed=dict(github_busy=0, namespace_busy=0, queued_fleet=queued),
                          github_budget=18, namespace_cap=20, selection_key=key)
         self.assertEqual({select(str(n), [])["runner_id"] for n in range(8)}, {2, 3})
-        self.assertEqual(select("1", None)["pool"], "namespace")
+        self.assertEqual(select("1", None)["pool"], "chris")
 
     def test_legacy_labels_partial_inventories_and_ambiguous_instances_cannot_authorize_a_slot(self):
         machines, pages = self.ranked_fixture()
@@ -259,6 +259,62 @@ class RoutingEntrypoint(unittest.TestCase):
         output, calls = self.pick(dict(app=fixtures, fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}), config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", PR_HEAD="a"*40)
         self.assertEqual(output["pool"], "chris")
         self.assertGreater(calls.index(("fleet", "orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1")), calls.index(("app", "repos/Test/code/actions/runs/3/jobs?per_page=100&page=1")))
+
+    def test_pr_uses_available_machine_before_unneeded_cloud_scan_without_dispatch_head(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=["github","chris","tauchonki","namespace"]\n')
+        output, calls = self.pick(dict(
+            state=dict(shared=self.shared(busy=19)),
+            fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory},
+        ), config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3",
+           GITHUB_STATE_TOKEN="state", PR_HEAD="")
+        self.assertEqual(output["pool"], "chris")
+        self.assertEqual([token for token, _ in calls], ["state", "fleet"])
+
+    def test_unknown_earlier_cloud_is_observed_before_later_available_machine(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=["namespace","chris","github"]\n')
+        output, calls = self.pick(dict(
+            state=dict(shared=self.shared(busy=19)), app=self.fixture(busy=19),
+            fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory},
+        ), config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3",
+           GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"], "namespace")
+        self.assertIn(("app", "orgs/Test/repos?per_page=100&page=1"), calls)
+
+    def test_available_first_cloud_does_not_fetch_unneeded_fleet_inventory(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=["github","chris","namespace"]\n')
+        output, calls = self.pick(dict(state=dict(shared=self.shared())), config=config,
+            FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3", GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual(calls, [("state", "shared")])
+
+    def test_excluded_unknown_cloud_does_not_delay_next_machine(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=["namespace","chris","github"]\n')
+        app = self.fixture(busy=19)
+        app["repos/Test/code/actions/runs/5/attempts/1/jobs?per_page=100&page=1"] = dict(total_count=1, jobs=[
+            dict(name="sandboxed-build", status="completed", conclusion="cancelled", runner_id=0,
+                 runner_name="", labels=["nscloud-ubuntu-24.04-amd64-8x16-with-features"])])
+        output, calls = self.pick(dict(app=app, state=dict(shared=self.shared(busy=19)),
+            fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}),
+            config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3",
+            GITHUB_STATE_TOKEN="state", GITHUB_RUN_ATTEMPT="2")
+        self.assertEqual(output["pool"], "chris")
+        self.assertFalse(any("orgs/Test/repos" in path for _, path in calls))
+
+    def test_cloud_absent_from_order_does_not_trigger_discovery_when_everything_is_full(self):
+        config, inventory = self.staging_fixture()
+        config = config.replace('[services.fleet]\n', '[services.fleet]\npr_order=["github","chris"]\n')
+        for guest in inventory["runners"]:
+            guest["busy"] = True
+        output, calls = self.pick(dict(state=dict(shared=self.shared(busy=19)),
+            fleet={"orgs/Test/actions/runner-groups/3/runners?per_page=100&page=1": inventory}),
+            config=config, FLEET_CI_ENABLED="true", FLEET_READ_TOKEN="fleet", FLEET_RUNNER_GROUP_ID="3",
+            GITHUB_STATE_TOKEN="state")
+        self.assertEqual(output["pool"], "github")
+        self.assertEqual([token for token, _ in calls], ["state", "fleet"])
 
     def test_staging_fallthrough_refreshes_runner_availability_after_cloud_scan(self):
         config, inventory = self.staging_fixture()
