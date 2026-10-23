@@ -9,7 +9,7 @@ The adapter reads all comments and current commit statuses through GraphQL, fetc
 the diff for otherwise approved PRs, and checks
 that the PR's head, base, lifecycle and hold state have not changed before
 reporting readiness. The gate selects the newest completed current-head review,
-requires every configured rubric, handles legacy scoreboard tables and live
+requires every configured rubric, handles legacy scoreboard tables,
 and enforces build, scope, allowed paths and pin-validation rules.
 Drafts, held PRs and stacked bases are reported separately.
 
@@ -96,7 +96,6 @@ reconciles two independent, mutually-exclusive reaction groups from `core.derive
 | **CI (build)** | waiting / running | 🟡 `yellow` |
 | | passed | 🟢 `green_circle` |
 | | failed | 🔴 `red_circle` |
-| **Review / lifecycle** | review in progress | 👀 `eyes` |
 | | waiting for review | *(none)* |
 | | changes requested / blocked | ✍️ `writing` |
 | | all review done, all green | ✔️ `check` |
