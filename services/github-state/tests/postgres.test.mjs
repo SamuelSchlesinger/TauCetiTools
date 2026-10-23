@@ -381,3 +381,70 @@ pg('state projections tolerate payload Unicode escapes without changing the stor
   }
  }finally{await f.close();}
 });
+
+pg('committed CI batches finish without entering the PostgreSQL writer again',async()=>{
+ const f=await postgresFixture();try{
+  const events=Array.from({length:100},(_,i)=>({delivery:'ci-known-'+i,event:'workflow_run',received:Date.now()}));
+  const request=()=>send(f.state,'/ci-receipts',{repository:repo.name,events});
+  assert.equal((await request()).status,200);
+  const atomic=f.state.atomic;let writes=0;
+  f.state.atomic=async()=>{writes++;throw Error('writer is unavailable');};
+  const response=await request();assert.equal(response.status,200);
+  const report=await response.json();assert.deepEqual(report.committed,events.map(p=>p.delivery));assert.ok(report.timing.write_ms>=0);assert.equal(writes,0);
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM deliveries')).one().n,100);
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM changes')).one().n,0);
+  f.state.ingress='parked';assert.equal((await request()).status,503);
+  f.state.ingress='apply';f.state.migrationState={phase:'exporting'};assert.equal((await request()).status,503);
+  f.state.migrationState=null;f.state.atomic=atomic;
+ }finally{await f.close();}
+});
+
+pg('partially committed CI batches retain the ordinary PostgreSQL writer fence',async()=>{
+ const f=await postgresFixture();try{
+  const event={delivery:'ci-prior',event:'check_run',received:Date.now()},fresh={...event,delivery:'ci-fresh'};
+  const request=events=>send(f.state,'/ci-receipts',{repository:repo.name,events});
+  assert.equal((await request([event])).status,200);
+  const prior=(await f.store.exec('SELECT received FROM deliveries WHERE id=?',event.delivery)).one().received;
+  assert.equal((await request([event,fresh])).status,200);
+  assert.equal((await f.store.exec('SELECT received FROM deliveries WHERE id=?',event.delivery)).one().received,prior,'prior commit timestamp is preserved');
+  const missing={...event,delivery:'ci-missing'};
+  await f.admin.query(`UPDATE ${f.schema}.backend_control SET generation='another-generation' WHERE singleton=1`);
+  assert.equal((await request([event])).status,200,'acknowledging a prior receipt adds no write');
+  assert.equal((await request([event,fresh,missing])).status,503,'new receipts still require the writer generation');
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM deliveries')).one().n,2);
+ }finally{await f.close();}
+});
+
+pg('an ingress pause during CI receipt lookup drains without starting a write',async()=>{
+ const f=await postgresFixture();let release;try{
+  let entered;const gate=new Promise(r=>release=r),reading=new Promise(r=>entered=r),raw=f.state.store;
+  f.state.store=new Proxy(raw,{get(target,key){
+   if(key==='exec')return async(sql,...args)=>{const rows=await target.exec(sql,...args);if(sql.startsWith('SELECT id FROM deliveries WHERE id IN')){entered();await gate;}return rows;};
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});
+  let writes=0;f.state.atomic=async()=>{writes++;throw Error('unexpected writer');};
+  const batch=send(f.state,'/ci-receipts',{repository:repo.name,events:[{delivery:'ci-paused-lookup',event:'check_run',received:Date.now()}]});
+  await reading;assert.equal(f.state.applying,1);
+  const pause=send(f.state,'/storage/ingress',{mode:'parked'});for(let n=0;n<100&&f.state.ingress!=='parked';n++)await new Promise(r=>setTimeout(r,20));
+  assert.equal(f.state.ingress,'parked');release();
+  assert.equal((await batch).status,503);assert.equal(writes,0);assert.equal((await(await pause).json()).drained,true);
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM deliveries')).one().n,0);
+ }finally{release?.();await f.close();}
+});
+
+pg('CI acknowledgement survives receipt archival between its lookup and reply',async()=>{
+ const f=await postgresFixture();try{
+  const delivery='ci-archived-during-lookup';await f.store.exec('INSERT INTO deliveries VALUES(?,?,?)',delivery,'ignored:check_run',Date.now()-15*86400000);
+  f.state.storageLoaded=true;const raw=f.state.store;
+  f.state.store=new Proxy(raw,{get(target,key){
+   if(key==='exec')return async(sql,...args)=>{const rows=await target.exec(sql,...args);if(sql.startsWith('SELECT id FROM deliveries WHERE id IN'))await f.state.archiveDeliveryReceipts();return rows;};
+   const value=Reflect.get(target,key,target);return typeof value==='function'?value.bind(target):value;
+  }});
+  f.state.atomic=async()=>{throw Error('acknowledgement must not acquire the writer');};
+  const response=await send(f.state,'/ci-receipts',{repository:repo.name,events:[{delivery,event:'check_run',received:Date.now()}]});
+  assert.equal(response.status,200);assert.deepEqual((await response.json()).committed,[delivery]);
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM deliveries')).one().n,0);
+  const receipt=await(await f.env.ARCHIVE.get('receipts/100/'+delivery+'.json')).json();assert.equal(receipt.delivery,delivery);assert.equal(receipt.disposition,'not_mirrored');
+  assert.equal((await f.store.exec('SELECT COUNT(*) n FROM changes')).one().n,0);
+ }finally{await f.close();}
+});
