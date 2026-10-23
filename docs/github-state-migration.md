@@ -76,6 +76,28 @@ Explicit admin replay shares cron's conditional R2 lease and stored lane cursor.
 The optional `limit` must be an integer from 1 to 100 (default 25); invalid
 values return HTTP 400 before acquiring the lease. Each pass uses a twenty-second
 work budget, respects pointer and recovery-error backoffs, and returns `leased`, `deadline`, or `lease_replaced` when appropriate.
+The requested limit is an upper bound; successful admin replies report the
+effective `page_limit`. A zero-progress deadline with due input and an adequate
+initial budget halves the observed page size, down to one pointer. Limits are
+persisted in the R2 lease claim before work starts. Cron keeps a fixed page limit
+within each lane, alternates lane preference, and checkpoints once between lanes
+when budget remains. That conditional handoff preserves the first lane's progress
+and names only the second lane in the new claim. A lost claim or handoff response
+may conservatively reduce that named lane even if it never started; this uncertain
+evidence expires within fifteen minutes. No checkpoint write is added per page.
+
+An expired owner can reduce only its named lane, and a cancelled smaller admin
+probe cannot reduce the automatic limit. Four fast full pages allow cautious
+growth without extending an existing recovery expiry. Both working limits and failed-size ceilings expire after fifteen minutes;
+quiet repositories and held input do not need successful full pages to recover
+the default size. Expiry and legacy CI-count evidence can reduce the working limit
+but never install a ceiling. Legacy CI counts establish an attempted batch, not
+its complete page size, so they select a conservative 25-pointer working limit.
+Optional lane-selection read failures fall back to normal replay; actual drain
+errors still retain the usual recovery backoff. Prepared recovery metadata records
+learned limits/expiry and each pass's page size, due-input count, budget and duration.
+This changes page sizing only; ownership, receipts, cursor checkpoints and retry
+deadlines still govern application and cleanup.
 An expired owner's completion cannot overwrite a replacement checkpoint.
 Permanent delivery receipts use conditional creation. Failed cleanup updates a
 pointer only if the ETag of its loaded snapshot still matches, so a stale attempt cannot

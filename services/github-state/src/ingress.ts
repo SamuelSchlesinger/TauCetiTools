@@ -107,6 +107,7 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
     else ciByDelivery.set(p.delivery,p);
   }
   const ci=[...ciByDelivery.values()].filter(p=>!conflicts.has(p.delivery));
+  const readySize=[...prepared.values()].filter(p=>p && (p.retry_at || 0)<=Date.now()).length;
   if(ci.length && Date.now()<(options.deadline || Infinity))try{
     const response=await stub(env.REPOSITORIES,repo.id).fetch('https://internal/ci-receipts',{method:'POST',body:JSON.stringify({repository:repo.name,events:ci.map(({delivery,event,received})=>({delivery,event,received}))})});
     batchStatus=response.status;
@@ -177,7 +178,7 @@ export async function drain(env: Env, repo: Repository, options: { limit?: numbe
     visited += group.length;
   }
   if(!stopped && visited<page.objects.length)stopped='deadline';
-  return { replayed, failed, superseded, delivery_errors, batched:ciCommitted.size, batch_status:batchStatus, last_error, next_retry, cursor: visited < page.objects.length || page.truncated ? (page.objects[visited-1]?.key || options.cursor) : undefined, remaining: Boolean(stopped) || page.truncated || replayed < page.objects.length, ...(stopped ? { stopped } : {}) };
+  return { replayed, failed, superseded, delivery_errors, page_size:page.objects.length, ready_size:readySize, batched:ciCommitted.size, batch_status:batchStatus, last_error, next_retry, cursor: visited < page.objects.length || page.truncated ? (page.objects[visited-1]?.key || options.cursor) : undefined, remaining: Boolean(stopped) || page.truncated || replayed < page.objects.length, ...(stopped ? { stopped } : {}) };
 }
 
 // Delivery diagnostics belong only to the immediate administrative reply.
@@ -326,16 +327,86 @@ export async function maintainRaw(env: Env, targets: (payload: any, event: strin
   if(completed && !state.last_error) await env.ARCHIVE.put('control/retention/raw_webhooks.json',JSON.stringify({at:Date.now(),after:state.after,examined,deleted,bytes,completed:state.last_completed ?? null,recovery_owned:true}));
 }
 
-async function claimReplay(env:Env,repo:Repository,manual=false):Promise<{key:string;state:any;began:number;etag?:string;stopped?:string;next_retry?:number}> {
+type ReplayLane = 'pointers' | 'held';
+const REPLAY_CEILING_MS=15*60000;
+const validPageLimit=(value:unknown):value is number=>Number.isSafeInteger(value) && Number(value)>=1 && Number(value)<=100;
+function pageCeiling(state:any,lane:ReplayLane):number {
+  return state[lane+'_page_ceiling_until']>Date.now() && validPageLimit(state[lane+'_page_ceiling'])?state[lane+'_page_ceiling']:100;
+}
+function pageLimit(state:any,lane:ReplayLane):number {
+  return Math.min(validPageLimit(state[lane+'_page_limit'])?state[lane+'_page_limit']:100,pageCeiling(state,lane));
+}
+function reduceReplayLimit(state:any,lane:ReplayLane,size:number,observed=false):void {
+  const cap=pageLimit(state,lane);
+  if(observed){state[lane+'_page_ceiling']=Math.min(pageCeiling(state,lane),Math.max(1,size-1));state[lane+'_page_ceiling_until']=Date.now()+REPLAY_CEILING_MS;}
+  state[lane+'_page_limit']=Math.max(1,Math.floor(Math.min(cap,size)/2));
+  state[lane+'_page_limit_until']=Date.now()+REPLAY_CEILING_MS;
+  state[lane+'_fast_passes']=0;
+}
+function learnReplayLimit(state:any,lane:ReplayLane):void {
+  const pass=state[lane+'_last_pass'];
+  if(!pass || pass.page_limit_adjusted || pass.stopped!=='deadline' || pass.replayed!==0 || pass.failed!==0 || pass.superseded>0 || pass.ready_size===0)return;
+  // Do not penalize a lane that only received the end of a shared cron budget.
+  // Legacy passes lack timing/size metadata; a committed CI batch proves that
+  // they did attempt this many pointers before exhausting the budget.
+  const size=validPageLimit(pass.page_size)?pass.page_size:validPageLimit(pass.batched)?50:0;
+  if(size<2 || pass.budget_ms!==undefined && pass.budget_ms<10000)return;
+  // Legacy CI counts are lower bounds on possibly mixed pages, so they may
+  // reduce the working limit but cannot establish a sizing ceiling.
+  reduceReplayLimit(state,lane,size,validPageLimit(pass.page_size) && pass.budget_ms>=10000);pass.page_limit_adjusted=true;
+}
+function recordReplayPass(state:any,lane:ReplayLane,pass:any,limit:number,budget:number,started:number):void {
+  const duration=Date.now()-started;
+  Object.assign(pass,{page_limit:limit,budget_ms:budget,duration_ms:duration});
+  state[lane+'_last_pass']=passSummary(pass);
+  const cap=pageLimit(state,lane);
+  // Recover throughput cautiously, and only after full pages at the learned
+  // cap. An explicitly smaller admin request provides no evidence for growth.
+  const fast=limit===cap && pass.replayed===limit && !pass.failed && !pass.stopped && duration<10000 && budget>=10000;
+  const previous=Number.isSafeInteger(state[lane+'_fast_passes'])?Math.max(0,Math.min(3,state[lane+'_fast_passes'])):0;
+  const successes=budget<10000 || limit<cap?previous:fast?Math.min(4,previous+1):0;
+  state[lane+'_fast_passes']=successes;
+  if(successes===4 && cap<100){state[lane+'_page_limit']=Math.min(pageCeiling(state,lane),cap+Math.max(1,Math.floor(cap/4)));state[lane+'_page_limit_until'] ??= Date.now()+REPLAY_CEILING_MS;state[lane+'_fast_passes']=0;}
+}
+async function claimReplay(env:Env,repo:Repository,manual?:{lane:ReplayLane;limit:number},canReplay=true):Promise<{key:string;state:any;began:number;lane:ReplayLane;etag?:string;stopped?:string;next_retry?:number}> {
   const key = recoveryKey(repo.id), object = await env.ARCHIVE.get(key);
   const state: any = object ? await object.json() : {};
   const began=Date.now();
-  if ((state.lease_until || 0)>began)return {key,state,began,stopped:'leased',next_retry:state.lease_until};
+  let lane:ReplayLane=manual?.lane ?? (state.next_lane==='held'?'held':'pointers');
+  if ((state.lease_until || 0)>began)return {key,state,began,lane,stopped:'leased',next_retry:state.lease_until};
   // Explicit admin work may advance a healthy owner between cron ticks. Real
   // recovery failures and each pointer's own retry deadline remain binding.
-  if((state.next_retry || 0)>began && (!manual || state.last_error))return {key,state,began,stopped:'recovery_backoff',next_retry:state.next_retry};
-  const claimed = await env.ARCHIVE.put(key, JSON.stringify({ ...state, last_attempt: began, lease_until: began + 60000 }), { onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: '*' } });
-  return {key,state,began,...(claimed?{etag:claimed.etag}:{stopped:'leased',next_retry:began+5000})};
+  if((state.next_retry || 0)>began && (!manual || state.last_error))return {key,state,began,lane,stopped:'recovery_backoff',next_retry:state.next_retry};
+  // Persist the learned bound in the lease claim, before any potentially slow
+  // I/O. A reset or replaced completion cannot discard the recovery decision.
+  const availability=new Map<ReplayLane,boolean>();
+  const hasInput=async(l:ReplayLane)=>{
+    if(!availability.has(l)){const page=await env.ARCHIVE.list({prefix:`parked/${repo.id}/${l}/`,limit:1});availability.set(l,Boolean(page.objects.length || page.truncated));}
+    return availability.get(l)!;
+  };
+  for(const l of ['pointers','held'] as const){
+    if(!(state[l+'_page_ceiling_until']>began)){delete state[l+'_page_ceiling'];delete state[l+'_page_ceiling_until'];}
+    if(state[l+'_page_limit_until']!==undefined && !(state[l+'_page_limit_until']>began)){delete state[l+'_page_limit'];delete state[l+'_page_limit_until'];state[l+'_fast_passes']=0;}
+    if(canReplay)learnReplayLimit(state,l);
+  }
+  const old=state.replay_inflight;
+  let work=false;
+  try {
+    if(canReplay && state.lease_until>0 && state.lease_until<=began && old && ['pointers','held'].includes(old.lane) && validPageLimit(old.limit)){
+      // Only the attempted lane can provide expiry evidence. A cancelled small
+      // admin probe says nothing about the larger automatic limit. Expiry is
+      // uncertain evidence, so it never installs or extends a sizing ceiling.
+      if((old.kind==='cron' || old.kind==='manual' && old.limit>=Math.min(50,pageLimit(state,old.lane))) && await hasInput(old.lane))reduceReplayLimit(state,old.lane,old.limit);
+    }
+    if(canReplay && !manual && !await hasInput(lane)){const other:ReplayLane=lane==='pointers'?'held':'pointers';if(await hasInput(other))lane=other;}
+    work=canReplay && Boolean(manual || await hasInput(lane));
+  } catch {work=canReplay;/* Optional lane-selection reads never postpone real replay; drain will surface an actual R2 outage. */}
+  delete state.replay_inflight;delete state.lease_limits;
+  const claimedAt=Date.now(),limit=Math.min(manual?.limit ?? 50,pageLimit(state,lane));
+  if(work)state.replay_inflight={lane,limit,kind:manual?'manual':'cron',started_at:claimedAt};
+  if(!manual && canReplay)state.next_lane=lane==='pointers'?'held':'pointers';
+  const claimed = await env.ARCHIVE.put(key, JSON.stringify({ ...state, last_attempt: claimedAt, lease_until: claimedAt + 60000 }), { onlyIf: object ? { etagMatches: object.etag } : { etagDoesNotMatch: '*' } });
+  return {key,state,began:claimedAt,lane,...(claimed?{etag:claimed.etag}:{stopped:'leased',next_retry:claimedAt+5000})};
 }
 async function prepareBacklog(env:Env,repo:Repository,state:any):Promise<void> {
   const counts:any = {};
@@ -350,14 +421,17 @@ async function prepareBacklog(env:Env,repo:Repository,state:any):Promise<void> {
 // Crashes leave at most a short lease; SQL/R2 receipts cover an unrecorded pass.
 export async function replayIngress(env:Env,repo:Repository,options:{limit?:number;held?:boolean}={}):Promise<any> {
   if(options.limit!==undefined && (!Number.isSafeInteger(options.limit) || options.limit<1 || options.limit>100))throw new Error('invalid_replay_limit');
-  const owner=await claimReplay(env,repo,true),{key,state,began}=owner;
+  const lane:ReplayLane=options.held?'held':'pointers';
+  const owner=await claimReplay(env,repo,{lane,limit:options.limit ?? 25}),{key,state,began}=owner;
   if(!owner.etag)return {replayed:0,failed:0,remaining:true,stopped:owner.stopped,next_retry:owner.next_retry};
-  const lane=options.held?'held':'pointers';let pass:any;
+  let pass:any;
   try {
     if(!state[lane+'_cursor'])state[lane+'_pass_started_at']=Date.now();
-    pass=await drain(env,repo,{...options,cursor:state[lane+'_cursor'],deadline:began+20000});
-    state[lane+'_cursor']=pass.cursor;state[lane+'_last_pass']=passSummary(pass);
+    const limit=Math.min(options.limit ?? 25,pageLimit(state,lane)),started=Date.now(),budget=Math.max(0,began+20000-started);
+    pass=await drain(env,repo,{...options,limit,cursor:state[lane+'_cursor'],deadline:began+20000});
+    state[lane+'_cursor']=pass.cursor;recordReplayPass(state,lane,pass,limit,budget,started);
     if(!pass.cursor && !pass.stopped)state[lane+'_pass_completed_at']=Date.now();
+    delete state.replay_inflight;
     await prepareBacklog(env,repo,state);
     state.failures=0;state.last_error=null; // Manual work must not postpone the next scheduled pass.
   }catch(error){
@@ -365,6 +439,7 @@ export async function replayIngress(env:Env,repo:Repository,options:{limit?:numb
     state.next_retry=Date.now()+Math.max(60,backoff(state.failures))*1000;
     pass={replayed:0,failed:0,...pass,remaining:true,stopped:'recovery_error',last_error:state.last_error,next_retry:state.next_retry};
   }
+  delete state.replay_inflight;
   const saved=await env.ARCHIVE.put(key,JSON.stringify({...state,last_attempt:began,lease_until:0}),{onlyIf:{etagMatches:owner.etag}});
   return saved?pass:{...pass,remaining:true,stopped:'lease_replaced'};
 }
@@ -372,23 +447,36 @@ export async function replayIngress(env:Env,repo:Repository,options:{limit?:numb
 // One durable, renewable-per-pass owner on the existing cron. A crash leaves a
 // short lease and cursor, not a new poller or an abandoned recovery obligation.
 export async function maintainIngress(env: Env, repo: Repository): Promise<void> {
-  const owner=await claimReplay(env,repo);
+  const full = (await storageState(env,repo))?.state === 'full';
+  const owner=await claimReplay(env,repo,undefined,!full);
   if(!owner.etag)return;
-  const {key,state,began}=owner,deadline=began+20000;
+  const {key,state,began,lane}=owner,deadline=began+20000;
   try {
-    const lanes = state.next_lane === 'held' ? ['held','pointers'] : ['pointers','held'];
-    state.next_lane = lanes[1];
-    const full = (await storageState(env,repo))?.state === 'full';
-    for (const lane of full ? [] : lanes) {
-      for(let pages=0;pages<20 && Date.now()<deadline;pages++) {
-        if(!state[lane+'_cursor'])state[lane+'_pass_started_at']=Date.now();
-        const pass = await drain(env, repo, { limit: 50, held: lane === 'held', cursor: state[lane + '_cursor'], deadline });
-        state[lane + '_cursor'] = pass.cursor;
-        state[lane + '_last_pass'] = passSummary(pass);
-        if(!pass.cursor && !pass.stopped)state[lane + '_pass_completed_at']=Date.now();
-        if(pass.stopped || !pass.cursor) break;
+    // Checkpoint once between lanes, not before every page. The second claim
+    // retains the first lane's progress and identifies the only active lane.
+    if(!full){
+      const lanes:ReplayLane[]=[lane,lane==='pointers'?'held':'pointers'];
+      for(const [index,current] of lanes.entries()){
+        if(Date.now()>=deadline)break;
+        const limit=Math.min(50,pageLimit(state,current));
+        if(index){
+          state.replay_inflight={lane:current,limit,kind:'cron',started_at:Date.now()};
+          const next:R2Object|null=await env.ARCHIVE.put(key,JSON.stringify({...state,last_attempt:began,lease_until:began+60000}),{onlyIf:{etagMatches:owner.etag}});
+          if(!next)return;
+          owner.etag=next.etag;
+        }
+        for(let pages=0;pages<20 && Date.now()<deadline;pages++) {
+          if(!state[current+'_cursor'])state[current+'_pass_started_at']=Date.now();
+          const started=Date.now(),budget=Math.max(0,deadline-started);
+          const pass = await drain(env, repo, { limit, held: current === 'held', cursor: state[current + '_cursor'], deadline });
+          state[current + '_cursor'] = pass.cursor;
+          recordReplayPass(state,current,pass,limit,budget,started);
+          if(!pass.cursor && !pass.stopped)state[current+'_pass_completed_at']=Date.now();
+          if(pass.stopped || !pass.cursor) break;
+        }
       }
     }
+    delete state.replay_inflight;
     // Prepare bounded counts separately from the traversal cursors so newer
     // valid events remain reachable even when many old items are backing off.
     await prepareBacklog(env,repo,state);
@@ -397,6 +485,7 @@ export async function maintainIngress(env: Env, repo: Repository): Promise<void>
     state.failures = (state.failures || 0) + 1; state.last_error = error instanceof Error ? error.message.slice(0, 200) : classify(error);
     state.next_retry = Date.now() + Math.max(60, backoff(state.failures)) * 1000;
   }
+  delete state.replay_inflight;
   // Conditional completion cannot overwrite a replacement owner after expiry.
   await env.ARCHIVE.put(key, JSON.stringify({ ...state, last_attempt: began, lease_until: 0 }), { onlyIf: { etagMatches: owner.etag } });
 }
