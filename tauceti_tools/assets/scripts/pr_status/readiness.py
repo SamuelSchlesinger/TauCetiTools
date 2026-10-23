@@ -79,13 +79,11 @@ def classify(pr, comments, statuses, paths, merge_base_sha, now=None):
     else:
         latest = gate.latest_current_scoreboard(comments, head)
         if latest is None or latest[1].get("mode") == "init":
-            result["category"] = ("review-in-progress" if gate.has_live_review(comments, head, now)
-                                  else "awaiting-review")
+            result["category"] = "awaiting-review"
         elif not verdict["review_safe"] and meta_merge_base(latest) != merge_base_sha:
             # The newest review judged a different diff (retargeted PR or rewritten base), so its
             # verdict, blocking or not, says nothing about the current one.
-            result["category"] = ("review-in-progress" if gate.has_live_review(comments, head, now)
-                                  else "awaiting-review")
+            result["category"] = "awaiting-review"
         elif not verdict["review_safe"]:
             board, meta = latest
             states = meta.get("states")
@@ -93,11 +91,7 @@ def classify(pr, comments, statuses, paths, merge_base_sha, now=None):
                 states = gate.states_from_table(board.get("body"))
             blocking = any(states.get(r) in {"blocking_request", "blocking_block"}
                            for r in gate.DEFAULT_RUBRICS)
-            result["category"] = ("awaiting-author" if blocking else
-                                  "review-in-progress" if gate.has_live_review(comments, head, now)
-                                  else "awaiting-review")
-        elif gate.has_live_review(comments, head, now):
-            result["category"] = "review-in-progress"
+            result["category"] = ("awaiting-author" if blocking else "awaiting-review")
         else:
             paths = set(paths)
             human = not paths or any(not (p.startswith("TauCeti/") or p in gate.DEFAULT_ALLOW)
