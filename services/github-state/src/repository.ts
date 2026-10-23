@@ -28,6 +28,8 @@ const FULL_DATABASE=10*1024**3-16*1024**2;
 // clients use their direct GitHub fallback instead of acting on frozen state.
 const FROZEN_AFTER=10*60000;
 const CURSOR_UPLOADS=4;
+// Change when the survey wire representation changes without a data revision.
+const SURVEY_ETAG_PREFIX='survey-v1-empty-markers:';
 // Private to local read scopes; request bodies and RPC arguments cannot set it.
 const ACTIVITY_CLOCK=Symbol('activity clock');
 const decimalArgument=(value:string):number|string=>Number.isSafeInteger(Number(value))?Number(value):value;
@@ -649,7 +651,9 @@ export class RepositoryState extends DurableObject<Env> {
         try {projected=(await this.projectedSurvey(number));}catch {hydrated=false;await this.optionalRead('survey_invalidate',async ()=>(await this.invalidateSurvey(number)));}
         if(hydrated) {const data=projected;await this.optionalRead('survey_projection',async ()=>(await this.rebuildSurvey(number,data)));}
       }
-      const review={...(hydrated && projected?JSON.parse(projected):summarizeFragments([],[])),issue_complete:false,review_complete:false};
+      // Existing v1 clients require this array. The survey projection ignores
+      // coordination comments, including claims in older cached projections.
+      const review={...(hydrated && projected?JSON.parse(projected):summarizeFragments([],[])),markers:[],issue_complete:false,review_complete:false};
       const statuses=await this.rows({repository:q.repository,operation:'statuses',args:{sha:row.headRefOid}});
       const green=Array.isArray(statuses) && statuses.some(c=>c.context==='build' && c.state==='SUCCESS') && !statuses.some(c=>c.context==='build' && c.state!=='SUCCESS');
       for(const [operation,field] of [['issue_comments','issue_complete'],['review_comments','review_complete']]) {
@@ -1056,12 +1060,16 @@ export class RepositoryState extends DurableObject<Env> {
     }
     if (payload.key!==key) return (await this.unavailable(q,'cursor_query_mismatch'));
     if (Boolean(payload.allow_observed)!==Boolean(q.allow_observed)) return (await this.unavailable(q,'cursor_coverage_mismatch'));
-    if (payload.result?.data!==undefined) return payload.result;
+    // HTTP cursors and migration shadow reads share this path. Retained pages
+    // keep their original revision/timestamps; only the wire DTO is normalized.
+    const compatible=(result:Result):Result=>q.operation==='survey' && Array.isArray(result.data)
+      ? {...result,data:result.data.map(row=>({...row,review:{...row.review,markers:[]}}))}:result;
+    if (payload.result?.data!==undefined) return compatible(payload.result);
     // Existing ten-minute cursors survive a rolling deployment. Only an offset
     // inside the stored snapshot can continue it; never fabricate an empty page.
     const legacy=cursor.match(/^([^:]+):([1-9][0-9]{0,8})$/),offset=Number(legacy?.[2]),id=legacy?.[1] || '';
     if (!legacy || !Array.isArray(payload.rows) || offset>=payload.rows.length) return (await this.unavailable(q,'cursor_invalid'));
-    return this.page(payload.result,payload.rows,id,offset);
+    return compatible(this.page(payload.result,payload.rows,id,offset));
   }
   page(result:Result,rows:any[],id:string,offset:number): Result {
     // Keep the number of client round trips bounded as inventories grow.
@@ -2578,7 +2586,10 @@ export class RepositoryState extends DurableObject<Env> {
         const changed=await this.frozenSince();
         const planned=this.migrationHeld() || this.migrationState?.phase==='replaying';
         if(changed!==null && !planned){requestUnavailable=true;return json({...await this.unavailable(q,'mirror_frozen'),frozen_since:changed},200,{'X-TauCeti-Storage':'degraded'});}
-        const etag='"'+(await this.revision())+'"',headers:Record<string,string>=this.degraded?{'X-TauCeti-Storage':'degraded'}:{};
+        // Replace a cached markerless survey even when stored data has not
+        // changed. Clients treat validators as opaque; revisions stay numeric.
+        const tag=(revision:number)=>'"'+(q.operation==='survey'?SURVEY_ETAG_PREFIX:'')+revision+'"';
+        const etag=tag(await this.revision()),headers:Record<string,string>=this.degraded?{'X-TauCeti-Storage':'degraded'}:{};
         if(this.migrationUnavailable && this.store.backend==='sqlite') {headers['X-TauCeti-Read-Fallback']='last-known-source';const frozen=this.localMeta('backend_owner')?.frozen_at;if(frozen)headers['X-TauCeti-Source-Frozen-At']=String(frozen);}
         if (!q.cursor && matchesETag(req.headers.get('if-none-match'),etag) && q.operation!=='progress' && (await this.store.exec('SELECT key FROM collections WHERE key=? AND complete=1',queryKey(q))).toArray().length) {
           this.backgroundDemand(q);
@@ -2590,7 +2601,7 @@ export class RepositoryState extends DurableObject<Env> {
           (cached.result.revision===(await this.revision()) || ['survey','open_prs','open_issues'].includes(q.operation) && Date.now()-cached.built<10000 || !await this.changedQuery(q,cached.result.revision))) {
           requestCoverage=cached.result.coverage || 'unknown';
           this.backgroundDemand(q);
-          return json(cached.result,200,{ETag:'"'+cached.result.revision+'"',...headers});
+          return json(cached.result,200,{ETag:tag(cached.result.revision),...headers});
         }
         let pending=this.inflightQueries.get(key);
         if (!pending) {
@@ -2607,7 +2618,7 @@ export class RepositoryState extends DurableObject<Env> {
         }
         requestUnavailable=result.status==='unavailable';
         requestCoverage=result.coverage || 'unknown';
-        return json(result,200,{ETag:'"'+result.revision+'"',...headers});
+        return json(result,200,{ETag:tag(result.revision),...headers});
       }
       if (path==='/health' && this.store.backend==='postgres') {
         const monitoring=await this.preparedObservation(),storage=monitoring.storage || {backend:'postgres',schema_version:null,expected_schema_version:1,expected_generation:this.backendGeneration(),connected:null,stale:true};

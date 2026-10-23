@@ -2,6 +2,7 @@ import {postgresContractFixture} from './postgres_runtime.mjs';
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
+import {spawnSync} from 'node:child_process';
 import {build} from 'esbuild';
 
 const bundle=await build({entryPoints:['src/repository.ts'],bundle:true,platform:'node',format:'esm',write:false,plugins:[{
@@ -34,7 +35,7 @@ async function fixture(){
 }
 
 test('compact roadmap snapshot updates on comment edit/delete without reading full histories',async()=>{
- const {state,db}=(await fixture());try {
+ const {state,db,env}=(await fixture());try {
   const repo='org/repo';await state.setMeta('repository',{id:'100',name:repo,installation:'200'});
   const complete=async (operation,args={})=>{const key=operation+':'+JSON.stringify(args);await db.prepare('INSERT OR REPLACE INTO collections VALUES(?,?,?,?,?,?,?)').run(key,operation,JSON.stringify(args),1,Date.now(),(await state.revision()),null);};
   await complete('open_prs');
@@ -51,10 +52,50 @@ test('compact roadmap snapshot updates on comment edit/delete without reading fu
   let result=await state.query(q);assert.equal(result.data.length,1);assert.equal(result.data[0].pr.number,7);
   assert.equal(result.data[0].review.meta.head_sha,'a'.repeat(40));assert.equal(result.data[0].review.contest.id,'102');
   assert.equal(result.data[0].review.issue_complete,true);assert.equal(JSON.stringify(result).includes('private description'),false);
+  assert.deepEqual(result.data[0].review.markers,[],'unchanged v1 clients keep their required empty compatibility array');
+  const legacy=payload=>spawnSync('python3',['../../tests/fixtures/legacy_survey_client.py'],{input:JSON.stringify(payload),encoding:'utf8'});
+  const accepted=legacy(result);assert.equal(accepted.status,0,accepted.stderr);assert.equal(JSON.parse(accepted.stdout).accepted,true);
+  const wire=validator=>state.fetch(new Request('https://internal/query',{method:'POST',headers:{'If-None-Match':validator},body:JSON.stringify(q)}));
+  const oldTag='"'+result.revision+'"',fresh=await wire(oldTag);
+  assert.equal(fresh.status,200,'a cached markerless representation must be replaced without a revision mutation');
+  const representationTag=fresh.headers.get('etag');assert.equal(representationTag,'"survey-v1-empty-markers:'+result.revision+'"');
+  assert.equal(legacy(await fresh.json()).status,0);
+  const cachedWire=await wire(oldTag);assert.equal(cachedWire.status,200);assert.equal(cachedWire.headers.get('etag'),representationTag);
+  // Exercise the defensive early-304 branch with a legacy collection row.
+  // Ordinary survey 304s come from the public edge, covered in recovery.test.
+  await complete('survey',Object.fromEntries(Object.entries(q.args).sort(([a],[b])=>a.localeCompare(b))));
+  assert.equal((await wire('W/'+representationTag)).status,304,'the repaired representation retains weak-validator 304 behavior');
+  const incompatible=structuredClone(result);delete incompatible.data[0].review.markers;
+  assert.notEqual(legacy(incompatible).status,0,'the frozen client must detect the original missing-field regression');
+  const cached=JSON.parse((await db.prepare('SELECT data FROM survey_state WHERE number=?').get('7')).data);
+  await db.prepare('UPDATE survey_state SET data=? WHERE number=?').run(JSON.stringify({...cached,markers:[{head:'old',expires_at:9999999999,providers:['obsolete']}]}),'7');
+  assert.deepEqual((await state.surveyRows(q)).rows[0].review.markers,[],'cached claims cannot reappear through the compatibility field');
+  const cursor='0b6c2f0e-1f7a-4b4c-9a1e-5b8d3c2a1f00',pageKey='cursors/100/'+cursor+'/100.json';
+  const queryKey='survey:'+JSON.stringify(Object.fromEntries(Object.entries(q.args).sort(([a],[b])=>a.localeCompare(b))));
+  const continueHttp=async cursor=>{
+   const response=await state.fetch(new Request('https://internal/query',{method:'POST',body:JSON.stringify({...q,cursor})}));
+   assert.equal(response.status,200);return response.json();
+  };
+  for(const markers of [undefined,[{head:'old',expires_at:9999999999,providers:['obsolete']}]]) {
+   const page=structuredClone(result);page.data[0].review.markers=markers;
+   const stored=JSON.stringify({repository:'100',key:queryKey,expires:Date.now()+600000,result:page});await env.ARCHIVE.put(pageKey,stored);
+   const continued=await continueHttp(cursor+':100');
+   assert.deepEqual(continued.data[0].review.markers,[]);assert.equal(legacy(continued).status,0);
+   assert.equal(continued.revision,result.revision);assert.equal(continued.observed_at,result.observed_at);assert.equal(continued.verified_at,result.verified_at);
+   assert.equal(await(await env.ARCHIVE.get(pageKey)).text(),stored,'compatible reads do not rewrite the retained page');
+  }
+  if(state.store.backend==='postgres') {
+   const row=structuredClone(result.data[0]);delete row.review.markers;
+   const header={...result};delete header.data;
+   await db.prepare('INSERT INTO cursors VALUES(?,?,?)').run('legacy-survey',Date.now()+600000,JSON.stringify({key:queryKey,rows:[row,row],result:header}));
+   const continued=await continueHttp('legacy-survey:1');
+   assert.equal(legacy(continued).status,0);assert.deepEqual(continued.data[0].review.markers,[]);assert.equal(continued.revision,result.revision);
+  }
   assert.equal(JSON.stringify(result).includes('"tok"'),false);
   assert.equal((await db.prepare("SELECT COUNT(*) n FROM demand WHERE key LIKE '%comments:%'").get()).n,0,'complete projections must not promote every history to frequent verification');
   assert.equal(result.author_counts[''],2,'automatic caps count all known roadmap PRs');
   const explicit=await state.query({...q,args:{roadmap:'PDE',skip:'Topology',numbers:'8'}});assert.equal(explicit.data[0].pr.number,8,'explicit PR overrides roadmap and skips');
+  assert.equal(legacy(explicit).status,0,'an unhydrated survey row remains accepted by the unchanged client');
   const prior=result.revision;
   await state.put('issue_comments','100',{...board,updated_at:'2026-10-13T01:00:00Z',body:'edited; scoreboard removed'},Date.now(),false,'7');
   await state.put('review_comments','101',{id:'101',body:'<!--tauceti-rubric:reuse -->'},Date.now(),true,'7');
