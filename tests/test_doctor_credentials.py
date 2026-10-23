@@ -68,6 +68,15 @@ class CredentialChecks(unittest.TestCase):
         self.assertIn("Cannot read App credential settings", finding.summary)
         self.assertNotIn("settings are missing", finding.summary)
 
+    def test_visible_repository_secrets_do_not_require_organization_secret_access(self):
+        self.responses["repos/one/Project/actions/organization-secrets"] = 403
+        self.assertEqual(self.finding().status, "ready")
+
+    def test_unused_organization_secret_rotation_does_not_invalidate_repository_use(self):
+        self.responses["repos/one/Project/actions/organization-secrets"] = {"secrets": [
+            {"name": name, "updated_at": "2027-01-01T00:00:00Z"} for name in ("APP_ID", "APP_PRIVATE_KEY")]}
+        self.assertEqual(self.finding().status, "ready")
+
     def test_build_failure_does_not_hide_branch_rule_instructions(self):
         self.responses["repos/one/Project/actions/workflows/pr-build.yml/runs?per_page=1"] = {
             "workflow_runs": [{"id": 88, "run_attempt": 1, "conclusion": "failure"}]}

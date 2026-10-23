@@ -407,13 +407,25 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
 
         metadata = []
         errors = []
+        repository_secrets = []
         secret_endpoints = ("secrets", "organization-secrets") if repo_info["content"]["owner"]["type"] == "Organization" else ("secrets",)
         for endpoint in secret_endpoints:
             value, error = gh.read(f"repos/{repo}/actions/{endpoint}")
-            metadata.extend(_items(value, "secrets"))
+            rows = _items(value, "secrets")
+            metadata.extend(rows)
+            if endpoint == "secrets" and not error:
+                repository_secrets = rows
             if error:
                 errors.append(error)
         names = {row["name"] for row in metadata}
+        # Repository secrets override organization secrets with the same name.
+        # An inaccessible, unused organization secret must not block verification.
+        app_settings = {}
+        for row in metadata:
+            if row["name"] in ("APP_ID", "APP_PRIVATE_KEY"):
+                app_settings.setdefault(row["name"], row)
+        app_errors = [] if {"APP_ID", "APP_PRIVATE_KEY"} <= {row["name"] for row in repository_secrets} else errors
+        app_metadata = list(app_settings.values())
         required_secrets = ["APP_ID", "APP_PRIVATE_KEY"]
         if extras and project.feature("claims"):
             required_secrets += ["CLAIMS_APP_ID", "CLAIMS_APP_PRIVATE_KEY"]
@@ -507,7 +519,7 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
                     attempt = run.get("run_attempt", 1)
                     label = f"Run {run['id']}, attempt {attempt}"
                     if consumer != "pr-build" and run.get("conclusion") == "skipped":
-                        _, summary = _credential_use([], metadata, errors, names, run)
+                        _, summary = _credential_use([], app_metadata, app_errors, names, run)
                         continue
                     jobs, job_error = gh.read(f"repos/{repo}/actions/runs/{run['id']}/attempts/{attempt}/jobs")
                     steps = [step for job in _items(jobs, "jobs") for step in job.get("steps", [])]
@@ -529,7 +541,7 @@ def diagnose(project: Project, *, extras=True, github=None) -> list[Finding]:
                     token_steps = [step for step in steps if any(name in step.get("name", "").lower() for name in
                                    ("create-github-app-token", "mint merge token", "mint comment token",
                                     "mint repo-scoped app token", "mint the app token"))]
-                    status, summary = _credential_use(token_steps, metadata, errors, names, run)
+                    status, summary = _credential_use(token_steps, app_metadata, app_errors, names, run)
                     if any(step.get("conclusion") in ("success", "failure") for step in token_steps):
                         latest = run
                         summary = label + ": " + summary
