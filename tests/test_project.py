@@ -242,7 +242,7 @@ class ProjectTests(unittest.TestCase):
             rows = {f.id: f for f in extra_findings(project, object(), "doctor")}
             self.assertEqual(rows["services.bors.enrollment"].status, "ready")
             self.assertEqual(rows["services.bors"].status, "pending")
-            project.raw["merge"]["backend"] = "github-direct"
+            project.raw["merge"]["backend"] = "github-queue"
             rows = {f.id: f for f in extra_findings(project, object(), "doctor")}
             self.assertEqual(rows["services.bors"].status, "ready")
             self.assertIn("not the selected merger", rows["services.bors"].summary)

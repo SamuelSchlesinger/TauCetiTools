@@ -41,7 +41,7 @@ class StatusIntentTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.env = patch.dict(os.environ, {'RUNNER_TEMP': str(self.directory), 'GITHUB_REPOSITORY': 'Owner/Repo',
-                                          'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2'}, clear=True)
+                                          'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '2', 'CI_STATUS_MERGE_BACKEND': 'bors'}, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
         self.sha = 'a' * 40
@@ -222,6 +222,14 @@ class StatusIntentTests(unittest.TestCase):
         limited = ci_status.Deferred('read', ci_status.time.time() + 3600)
         with patch.object(ci_status.bors_scope_approval, 'observation', return_value={}), patch.object(ci_status.bors_scope_approval, 'verify', side_effect=limited), self.assertRaises(ci_status.Deferred):
             ci_status.scope_approved(fake, record)
+
+    def test_queue_cannot_replay_a_bors_scope_waiver(self):
+        with patch.dict(os.environ, {'GITHUB_REPOSITORY': 'TauCetiProject/TauCeti'}):
+            _, record = self.approved_scope()
+        with patch.dict(os.environ, {'CI_STATUS_MERGE_BACKEND': 'queue'}), \
+                patch.object(ci_status.bors_scope_approval, 'observation') as observation:
+            self.assertFalse(ci_status.scope_approved(FakeGitHub([]), record))
+            observation.assert_not_called()
 
     def test_batch_paths_are_relative_unique_sorted_and_bounded(self):
         approval = {'head': self.sha, 'base': 'b' * 40, 'batch_id': 5, 'paths': ['TauCeti/X.lean', 'scripts/x']}

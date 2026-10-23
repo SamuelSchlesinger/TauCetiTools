@@ -5,8 +5,8 @@ on:
   # The merge queue tests a batch (one or more PRs combined onto current main) before it lands. We
   # build the COMBINED merge-group commit exactly as GitHub synthesized it and post the `build`
   # status on it so the queue's required check is satisfied. A combined diff that reaches outside
-  # TauCeti/ needs exact-revision human approval through bors; the trusted harness
-  # remains independent of that diff.
+  # TauCeti/ stays scope-blocked with the merge queue; an administrator can instead
+  # admin-merge its PR. Bors setups use the existing exact-revision bors merge approval.
   merge_group:
     types: [checks_requested]
   # Bors dispatches the exact staging SHA. repository_dispatch uses this trusted

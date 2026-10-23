@@ -39,6 +39,9 @@ class DoctorSetupTests(unittest.TestCase):
     def publish_package(self, repo, *, lakefile="lakefile.toml"):
         for name in ("lean-toolchain", "lake-manifest.json", lakefile):
             self.responses[f"repos/{repo}/contents/{name}?ref=main"] = {"size": 20}
+        directories = ["Project"] if repo == "one/Project" else ["ProjectRoadmap", "Completed"]
+        for directory in directories:
+            self.responses[f"repos/{repo}/contents/{directory}?ref=main"] = [{"name": ".gitkeep", "type": "file"}]
 
     def test_missing_files_are_failed_and_identify_the_published_branch(self):
         rows = self.findings()
@@ -94,7 +97,10 @@ class DoctorSetupTests(unittest.TestCase):
 
     def test_local_build_guidance_and_roadmap_prerequisite(self):
         rows = self.findings()
-        self.assertIn("Prerequisite unresolved", rows["lean.roadmap"].summary)
+        self.assertIn("Finish the content package", rows["lean.roadmap"].summary)
+        self.assertNotIn("$ gh api", "\n".join(rows["lean.roadmap"].steps))
+        self.publish_package("one/Project")
+        rows = self.findings()
         for role in ("content", "roadmap"):
             steps = "\n".join(rows["lean." + role].steps)
             self.assertIn("reads GitHub at one/Project", steps)
@@ -106,7 +112,7 @@ class DoctorSetupTests(unittest.TestCase):
         self.publish_package("one/Project")
         rows = self.findings()
         self.assertEqual(rows["lean.content"].status, "ready")
-        self.assertNotIn("Prerequisite unresolved", rows["lean.roadmap"].summary)
+        self.assertNotIn("Finish the content package", rows["lean.roadmap"].summary)
         self.publish_package("one/ProjectRoadmap", lakefile="lakefile.lean")
         self.assertEqual(self.findings()["lean.roadmap"].status, "ready")
 
@@ -123,13 +129,15 @@ class DoctorSetupTests(unittest.TestCase):
         with redirect_stdout(output):
             render([build, merge])
         build_text, merge_text = output.getvalue().split("\nAutomatic merging\n")
-        self.assertIn("gh workflow run pr-build.yml", build_text)
+        self.assertIn("pr-build runs on normal content changes", build_text)
+        self.assertNotIn("gh pr list", build_text)
         self.assertNotIn("no manual-dispatch trigger", build_text)
         self.assertIn("no manual-dispatch trigger", merge_text)
         self.assertNotIn("gh workflow run", merge_text)
 
     @unittest.skipUnless(shutil.which("zsh"), "zsh is not installed")
     def test_toolchain_fetch_commands_run_under_zsh(self):
+        self.publish_package("one/Project")
         rows = self.findings()
         for role in ("content", "roadmap"):
             steps = rows["lean." + role].steps
@@ -143,6 +151,7 @@ class DoctorSetupTests(unittest.TestCase):
                 self.assertEqual((Path(tmp) / "lean-toolchain").read_text(), "leanprover/lean4:v4.test\n")
 
     def test_gitignore_instruction_preserves_rules_and_excludes_lake_artifacts(self):
+        self.publish_package("one/Project")
         steps = self.findings()["lean.content"].steps
         command, = [line[2:] for step in steps for line in step.splitlines() if line.startswith("$ git check-ignore")]
         with tempfile.TemporaryDirectory() as tmp:
