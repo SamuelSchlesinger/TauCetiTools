@@ -286,8 +286,15 @@ def _validate(raw: dict, source: str) -> Project:
         if not isinstance(upstream.get("package"), str) or not re.fullmatch(r"[A-Za-z0-9_-]+", upstream["package"]):
             raise ConfigError("each upstream requires a Lake package name")
     backend = _table(raw, "merge").get("backend", "github-queue")
-    if backend not in ("github-queue", "bors", "github-direct"):
-        raise ConfigError("merge.backend must be github-queue, github-direct or bors")
+    if backend == "github-direct":
+        raise ConfigError(
+            'github-direct is no longer a supported merge setup. Choose merge.backend = "github-queue" '
+            "and enable GitHub's merge queue with MERGE_BACKEND=queue, or configure Bors and choose "
+            'merge.backend = "bors" with MERGE_BACKEND=bors. Review the branch rules before switching; '
+            'doctor does not change your configuration or GitHub settings.'
+        )
+    if backend not in ("github-queue", "bors"):
+        raise ConfigError("merge.backend must be github-queue or bors")
     if backend == "bors" and _table(raw, "services").get("bors", {}).get("mode", "off") == "off":
         raise ConfigError("Bors must be configured before selecting merge.backend = bors")
     return Project(raw, source)
