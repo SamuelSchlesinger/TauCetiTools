@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {postgresFixture,PostgresStore,postgresSQL} from './postgres_runtime.mjs';
 const enabled=Boolean(process.env.TEST_POSTGRES_URL && process.env.TEST_POSTGRES_MIGRATION_URL);
 const pg=(name,fn)=>test(name,{skip:!enabled},fn);
+function requireDirectCleanup(){const host=new URL(process.env.TEST_POSTGRES_URL).hostname;assert.ok(host.endsWith('.neon.tech')&&!host.split('.')[0].endsWith('-pooler'),'Session termination fault tests require a direct, unpooled Neon test endpoint');}
 const repo={id:'100',name:'org/repo',installation:'200'};
 const complete=async(state,q)=>state.store.exec('INSERT INTO collections VALUES(?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET complete=1',q.operation+':'+JSON.stringify(q.args || {}),q.operation,JSON.stringify(q.args || {}),1,Date.now(),await state.revision(),null);
 const send=(state,path,body)=>state.fetch(new Request('https://internal'+path,{method:'POST',body:JSON.stringify(body)}));
@@ -449,29 +450,32 @@ pg('CI acknowledgement survives receipt archival between its lookup and reply',a
  }finally{await f.close();}
 });
 
-pg('a client read timeout closes the real transport without a second rollback timeout or callback replay',async()=>{
- const f=await postgresFixture(),NativeSocket=globalThis.WebSocket,sockets=[];let calls=0,rollbacks=0;
+pg('a blackholed close cannot retain the server lock after a client timeout',async()=>{
+ requireDirectCleanup();
+ const f=await postgresFixture(),NativeSocket=globalThis.WebSocket,sockets=[];let calls=0,rollbacks=0,abandoned;
  try{
   globalThis.WebSocket=class extends NativeSocket {
    drop=false;closeCalled=false;
    constructor(...args){super(...args);sockets.push(this);}
    addEventListener(type,listener,...args){return super.addEventListener(type,type==='message'?event=>{if(!this.drop)listener.call(this,event);}:listener,...args);}
-   close(...args){this.closeCalled=true;return super.close(...args);}
+   close(...args){this.closeCalled=true;if(!this.drop)return super.close(...args);}
   };
   const start=performance.now();
   await assert.rejects(f.store.transaction(async tx=>{
    calls++;const query=tx.client.query.bind(tx.client);tx.client.query=(sql,...args)=>{if(sql==='ROLLBACK')rollbacks++;return query(sql,...args);};await tx.exec('INSERT INTO demand VALUES(?,?)','timed-out-write',Date.now());
-   assert.equal(sockets.length,1);sockets[0].drop=true;
+   assert.equal(sockets.length,1);abandoned=tx.connectionState.session;tx.client.connectionParameters.query_timeout=100;sockets[0].drop=true;
    await tx.exec('SELECT pg_sleep(0.05)');
   }),/Repository database unavailable/);
-  assert.ok(performance.now()-start<28000,'cleanup must not wait another full query timeout');
+  assert.ok(performance.now()-start<8000,'cleanup must confirm termination without waiting for the idle timeout');
+  assert.equal((await f.admin.query('SELECT COUNT(*)::int AS n FROM pg_stat_activity WHERE pid=$1',[abandoned.pid])).rows[0].n,0);
   assert.equal(calls,1);assert.equal(rollbacks,0,'a client timeout must not submit ROLLBACK');assert.equal(sockets[0].closeCalled,true);
   await f.store.transaction(write=>write.exec('INSERT INTO demand VALUES(?,?)','next-writer',Date.now()));
   assert.deepEqual((await f.store.exec('SELECT key FROM demand ORDER BY key')).toArray(),[{key:'next-writer'}]);
- }finally{globalThis.WebSocket=NativeSocket;for(const socket of sockets)try{socket.close();}catch{}await f.close();}
+ }finally{globalThis.WebSocket=NativeSocket;for(const socket of sockets)try{NativeSocket.prototype.close.call(socket);}catch{}await f.close();}
 });
 
 pg('a client timeout during a running server statement preserves the database writer fence and rolls back',async()=>{
+ requireDirectCleanup();
  const f=await postgresFixture(),NativeSocket=globalThis.WebSocket;let socket,calls=0,rollbacks=0;
  try{
   globalThis.WebSocket=class extends NativeSocket {
@@ -487,9 +491,69 @@ pg('a client timeout during a running server statement preserves the database wr
    await tx.exec('SELECT pg_sleep(2)');
   }),/Repository database unavailable/);
   assert.equal(calls,1);assert.equal(rollbacks,0,'a client timeout must not submit ROLLBACK');
-  // This must acquire the same backend_control row lock. Closing the local
-  // queue does not bypass it while the old server statement is unwinding.
+  // Socket closure can end the backend between the identity lookup and
+  // termination, returning false. Respect the cleanup retry cooldown before
+  // checking that the next writer acquires the same database ownership lock.
+  await new Promise(resolve=>setTimeout(resolve,1100));
   await f.store.transaction(tx=>tx.exec('INSERT INTO demand VALUES(?,?)','after-mid-statement',Date.now()));
   assert.deepEqual((await f.store.exec('SELECT key FROM demand ORDER BY key')).toArray(),[{key:'after-mid-statement'}]);
  }finally{globalThis.WebSocket=NativeSocket;try{socket?.close();}catch{}await f.close();}
+});
+
+
+pg('lost ownership response is cleaned up before another transaction acquires the fence',async()=>{
+ requireDirectCleanup();
+ const f=await postgresFixture(),NativeSocket=globalThis.WebSocket,sockets=[];let callbacks=0;
+ try{
+  globalThis.WebSocket=class extends NativeSocket {
+   drop=false;
+   constructor(...args){super(...args);sockets.push(this);}
+   send(data){if(Buffer.from(data).includes(Buffer.from('backend_control')))this.drop=true;return super.send(data);}
+   addEventListener(type,listener,...args){return super.addEventListener(type,type==='message'?event=>{if(!this.drop)listener.call(this,event);}:listener,...args);}
+   close(...args){if(!this.drop)return super.close(...args);}
+  };
+  const start=performance.now();await assert.rejects(f.store.transaction(async()=>callbacks++),/Repository database unavailable/);
+  assert.ok(performance.now()-start<28000);assert.equal(callbacks,0);
+  globalThis.WebSocket=NativeSocket;
+  await f.store.transaction(tx=>tx.exec('INSERT INTO demand VALUES(?,?)','owner-response-recovered',Date.now()));
+  assert.deepEqual((await f.store.exec('SELECT key FROM demand')).toArray(),[{key:'owner-response-recovered'}]);
+ }finally{globalThis.WebSocket=NativeSocket;for(const socket of sockets)try{NativeSocket.prototype.close.call(socket);}catch{}await f.close();}
+});
+
+pg('cleanup identity guards cannot terminate a different session or a reused transaction',async()=>{
+ const f=await postgresFixture();const {Client}=await import('@neondatabase/serverless');const other=new Client(process.env.TEST_POSTGRES_URL);await other.connect();
+ try{
+  await other.query('BEGIN');
+  const token='unrelated-fixture-'+crypto.randomUUID();
+  const identity=(await other.query("SELECT pg_backend_pid() AS pid,(EXTRACT(EPOCH FROM backend_start)*1000000)::bigint::text AS started_us,set_config('application_name',$1,true) AS token FROM pg_stat_activity WHERE pid=pg_backend_pid()",[token])).rows[0];
+  for(const wrong of [{...identity,pid:0},{...identity,started_us:'1'},{...identity,token:'different-transaction'}]){
+   f.store.discarded=[{...wrong,discardedAt:Date.now()}];f.store.nextCleanupAt=0;assert.equal(await f.store.cleanupDiscarded(),'already_ended');assert.equal((await other.query('SELECT 1 AS alive')).rows[0].alive,1);
+  }
+  // COMMIT resets the LOCAL token, even if the caller missed its response.
+  await other.query('COMMIT');f.store.discarded=[{...identity,discardedAt:Date.now()}];f.store.nextCleanupAt=0;
+  assert.equal(await f.store.cleanupDiscarded(),'already_ended');assert.equal((await other.query('SELECT 1 AS alive')).rows[0].alive,1);
+  // The privileged fixture session is a different role and must never match.
+  const adminToken='fixture-admin-'+crypto.randomUUID();
+  const adminIdentity=(await f.admin.query("SELECT pg_backend_pid() AS pid,(EXTRACT(EPOCH FROM backend_start)*1000000)::bigint::text AS started_us,set_config('application_name',$1,false) AS token FROM pg_stat_activity WHERE pid=pg_backend_pid()",[adminToken])).rows[0];
+  f.store.discarded=[{...adminIdentity,discardedAt:Date.now()}];f.store.nextCleanupAt=0;assert.equal(await f.store.cleanupDiscarded(),'already_ended');assert.equal((await f.admin.query('SELECT 1 AS alive')).rows[0].alive,1);
+ }finally{await other.end();await f.close();}
+});
+
+
+pg('expired cleanup retains its session handle and cannot bypass the database ownership lock',async()=>{
+ requireDirectCleanup();
+ const f=await postgresFixture();const {Client}=await import('@neondatabase/serverless');const holder=new Client(process.env.TEST_POSTGRES_URL);holder.on('error',()=>{});await holder.connect();let released=false;
+ try{
+  await holder.query('BEGIN');
+  const token='fixture-holder-'+crypto.randomUUID();
+  const identity=(await holder.query("SELECT pg_backend_pid() AS pid,(EXTRACT(EPOCH FROM backend_start)*1000000)::bigint::text AS started_us,set_config('application_name',$1,true) AS token FROM pg_stat_activity WHERE pid=pg_backend_pid()",[token])).rows[0];
+  await holder.query(`SELECT generation FROM ${f.schema}.backend_control WHERE singleton=1 FOR UPDATE`);
+  f.store.discarded=[{...identity,discardedAt:Date.now()-45001}];let callbacks=0;
+  const query=f.store.http.query.bind(f.store.http);f.store.http.query=async(...args)=>{if(args[0].includes('AS terminated FROM pg_stat_activity'))throw Error('HTTP-only cleanup outage');return query(...args);};
+  await assert.rejects(f.store.transaction(async()=>callbacks++),/55P03/);assert.equal(callbacks,0);
+  f.store.http.query=query;
+  await f.store.transaction(tx=>tx.exec('INSERT INTO demand VALUES(?,?)','after-cleanup-grace',Date.now()));released=true;
+  assert.equal(f.store.discarded.length,0);assert.equal((await f.admin.query('SELECT COUNT(*)::int AS n FROM pg_stat_activity WHERE pid=$1',[identity.pid])).rows[0].n,0);
+  assert.deepEqual((await f.store.exec('SELECT key FROM demand')).toArray(),[{key:'after-cleanup-grace'}]);
+ }finally{if(!released)try{await holder.query('ROLLBACK');}catch{}holder.neonConfig.destroy();await f.close();}
 });

@@ -322,15 +322,36 @@ python3 services/github-state/scripts/migrate.py --environment production \
 
 Held-input recovery is a fix-forward operation, not permission to discard input.
 
-When a PostgreSQL client times out or loses its transport, the adapter closes
-that connection instead of queuing rollback behind the stalled query. Ordinary
-SQL and application errors still roll back a healthy connection. A failed or
-uncertain commit never retries the application callback; input replay checks the
-committed delivery receipt. Sanitized transaction diagnostics report the failing
-phase, writer wait and transaction duration without SQL or driver error bodies.
-This releases the local queue; the database lock remains until PostgreSQL notices
-the disconnect or ends the statement/session. A later writer can still receive a
-lock timeout and leave its input parked for retry.
+Repository data writes use serialized interactive transactions at Read Committed
+isolation, including standalone write batches. Every data writer must acquire the
+database ownership lock. Before
+acquiring the ownership lock, it records the session PID, exact backend start time
+and a unique transaction-local application name. When a client times out or loses
+its transport, the adapter closes that connection instead of queuing rollback
+behind the stalled query. Ordinary SQL and application errors still roll back a
+healthy connection.
+
+For a direct Neon endpoint, a separate bounded HTTP query terminates only that
+identified session in the same database and application role, and waits for server
+confirmation. Pooler and other endpoints only check whether the identified
+transaction has ended; they never signal a reusable backend. Unconfirmed cleanup
+blocks local writers for up to 45 seconds, with a one-second cleanup retry cooldown.
+After that grace period, writers retry the database ownership lock even if HTTP
+remains unavailable. This is an availability grace period, not a bound on server
+COMMIT or socket waits. Expired identities remain available for bounded cleanup
+attempts in rotation; only confirmed termination or an ended transaction removes
+an identity. A still-held ownership lock causes a bounded lock timeout and leaves
+input parked. Stored reads remain available. Health reports cleanup count, age,
+blocking/expired state and HTTP cleanup failures. Prepared capacity monitoring
+uses its separate generation-checked HTTP function. This local gate does not
+survive an isolate restart or store replacement; the database ownership lock and
+server timeouts still apply.
+
+A failed or uncertain commit never retries the application callback; termination
+or an absent session does not prove rollback. Input replay checks the committed
+delivery receipt. Sanitized diagnostics report cleanup result, failing phase,
+writer wait and transaction duration without session tokens, SQL or driver error
+bodies.
 
 Inspect the pointer/body and their digest privately; never paste payloads or secrets
 into logs or issue comments. Recover an exact missing body from retained raw/pinned
