@@ -7,7 +7,6 @@ The service materializes only these facts; direct reads use the same reductions.
 from __future__ import annotations
 
 import json
-import math
 import re
 from pathlib import Path
 
@@ -77,36 +76,6 @@ def scoreboard(comments):
     return None
 
 
-def markers(comments):
-    out = []
-    for c in comments or []:
-        match = re.search(SPEC["claim_pattern"], c.get("body") or "")
-        if not match:
-            continue
-        try:
-            value = _json(match[1])
-        except ValueError:
-            continue
-        expiry = value.get("expires_at") if isinstance(value, dict) else None
-        if (
-            isinstance(expiry, bool)
-            or not isinstance(expiry, (int, float))
-            or abs(expiry) > 9007199254740991
-            or not math.isfinite(expiry)
-            or int(expiry) != expiry
-        ):
-            continue
-        providers = value.get("providers")
-        out.append(
-            {
-                "head": value.get("head"),
-                "expires_at": int(expiry),
-                "providers": [p for p in providers if isinstance(p, str)] if isinstance(providers, list) else [],
-            }
-        )
-    return out
-
-
 def newest_contest(comments):
     roots = {}
     for c in comments or []:
@@ -159,7 +128,6 @@ def rebase_heads(comments):
 def summarize(issue_comments, review_comments):
     return {
         "meta": compact_meta(scoreboard(issue_comments)),
-        "markers": markers(issue_comments),
         "contest": newest_contest(review_comments),
         "rebase_heads": rebase_heads(issue_comments),
     }
