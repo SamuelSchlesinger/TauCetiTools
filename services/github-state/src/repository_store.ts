@@ -136,7 +136,7 @@ export class StoreFenced extends Error {constructor(){super('Repository backend 
 type TransactionPhase='connect'|'begin'|'session'|'owner'|'apply'|'commit';
 interface SessionIdentity {pid:number;started_us:string;token:string}
 type SessionCleanup='terminated'|'already_ended'|'unconfirmed'|'expired';
-interface DiscardedSession extends SessionIdentity {discardedAt:number}
+interface DiscardedSession extends SessionIdentity {discardedAt:number;transaction_id:string}
 type ConnectionFailure='client_timeout'|'server_error'|'driver_error'|'connection_lost'|'connect_timeout'|'rollback_timeout'|'application'|'fenced'|'commit_rejected';
 interface ConnectionState {closed:boolean;ending:boolean;error?:StoreUnavailable;phase:TransactionPhase;code?:string;reason?:ConnectionFailure;commitUncertain?:boolean;cleanup?:'rollback_timeout'|'rollback_error';session?:SessionIdentity;ownerAttempted?:boolean;abort?:(error:StoreUnavailable)=>void}
 const sqlState=(code:unknown):string|undefined=>typeof code==='string' && /^[0-9A-Z]{5}$/.test(code)?code:undefined;
@@ -241,7 +241,7 @@ export class PostgresStore implements RepositoryStore {
   // bounded local gate expires or the isolate restarts. LOCAL application_name
   // distinguishes a completed transaction from an uncertain COMMIT; it never
   // establishes commit outcome.
-  private async cleanupDiscarded():Promise<SessionCleanup|undefined> {
+  private async cleanupDiscarded(transaction_id:string):Promise<SessionCleanup|undefined> {
     const session=this.discarded[0];if(!session)return;
     // 45s is a local availability heuristic, not a bound on COMMIT/socket I/O.
     // Retain expired identities and retry them fairly; only positive evidence
@@ -265,19 +265,24 @@ export class PostgresStore implements RepositoryStore {
     this.discarded.shift();if(result==='unconfirmed')this.discarded.push(session);
     this.nextCleanupAt=Date.now()+1000;
     if(result==='unconfirmed'&&!this.cleanupBlocked())result='expired';
-    storeLog('repository_postgres_cleanup',{result});return result;
+    storeLog('repository_postgres_cleanup',{result,transaction_id,discarded_transaction_id:session.transaction_id});return result;
   }
   private cleanupBlocked():boolean {return this.discarded.some(s=>Date.now()-s.discardedAt<45000);}
   private async transact<T>(apply:(store:RepositoryStore)=>Promise<T>,wait_ms:number):Promise<T> {
-    const pendingCleanup=await this.cleanupDiscarded();
+    const transaction_id=crypto.randomUUID(),admission_started_at=Date.now();
+    const pendingCleanup=await this.cleanupDiscarded(transaction_id),admission_cleanup_ms=Date.now()-admission_started_at;
     if(this.cleanupBlocked()){
-      storeLog('repository_postgres_transaction',{phase:'cleanup',code:null,reason:'cleanup_pending',admission_cleanup:pendingCleanup ?? null,session_cleanup:pendingCleanup,outcome:'failed',wait_ms,transaction_ms:0,failed:true,connection_discarded:false});
+      storeLog('repository_postgres_transaction',{phase:'cleanup',code:null,reason:'cleanup_pending',admission_cleanup:pendingCleanup ?? null,session_cleanup:pendingCleanup,outcome:'failed',transaction_id,admission_started_at,admission_cleanup_ms,wait_ms,transaction_ms:0,failed:true,connection_discarded:false});
       throw new StoreUnavailable();
     }
     // Leave time for the server's 15s statement timeout to return its SQLSTATE.
     let client:Client;try{client=new Client({connectionString:this.url,connectionTimeoutMillis:10000,query_timeout:20000});}catch{throw new StoreUnavailable();}
     const started=Date.now();let failed=true,session_cleanup:SessionCleanup|undefined=pendingCleanup;
+    const phase_ms:Record<TransactionPhase,number>={connect:0,begin:0,session:0,owner:0,apply:0,commit:0};
+    let phaseBegan=started,phaseOpen=true,rollback_ms=0,close_ms=0,cleanup_ms=0;
     const connection:ConnectionState={closed:false,ending:false,phase:'connect'};let disconnected!:(error:StoreUnavailable)=>void;
+    const finishPhase=()=>{if(phaseOpen){phase_ms[connection.phase]+=Math.max(0,Date.now()-phaseBegan);phaseOpen=false;}};
+    const enterPhase=(phase:TransactionPhase)=>{finishPhase();connection.phase=phase;phaseBegan=Date.now();phaseOpen=true;};
     const lost=new Promise<never>((_,reject)=>{disconnected=reject;});void lost.catch(()=>{});
     connection.abort=disconnected;
     const fail=(code?:string,reason:ConnectionFailure='connection_lost')=>{if(connection.ending || connection.error)return;const safeCode=sqlState(code) || '08006';if(!connection.reason){connection.code=safeCode;connection.reason=reason;}connection.error=new StoreUnavailable(safeCode);this.diagnostics.connections++;this.diagnostics.queries++;this.diagnostics.lastConnection=Date.now();disconnected(connection.error);};
@@ -288,13 +293,13 @@ export class PostgresStore implements RepositoryStore {
         // Pipelined authentication finishes with BEGIN's first response.
         const timer=setTimeout(()=>fail('08001','connect_timeout'),10000);
         try{await Promise.race([client.connect(),lost]);}finally{clearTimeout(timer);}
-        connection.phase='begin';await client.query("BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='15s'; SET LOCAL idle_in_transaction_session_timeout='30s'");
-        connection.phase='session';
+        enterPhase('begin');await client.query("BEGIN; SET LOCAL lock_timeout='5s'; SET LOCAL statement_timeout='15s'; SET LOCAL idle_in_transaction_session_timeout='30s'");
+        enterPhase('session');
         const token='tauceti-ghstate-'+crypto.randomUUID();
         const identity=(await client.query("SELECT pg_backend_pid() AS pid,(EXTRACT(EPOCH FROM backend_start)*1000000)::bigint::text AS started_us,set_config('application_name',$1,true) AS token FROM pg_stat_activity WHERE pid=pg_backend_pid()",[token])).rows[0];
         if(!identity || !Number.isSafeInteger(identity.pid) || identity.pid<=0 || typeof identity.started_us!=='string' || !/^[0-9]+$/.test(identity.started_us) || identity.token!==token)throw new StoreUnavailable();
         connection.session={pid:identity.pid,started_us:identity.started_us,token};
-        connection.phase='owner';connection.ownerAttempted=true;
+        enterPhase('owner');connection.ownerAttempted=true;
         const control=await client.query(`SELECT generation,backend,schema_version FROM "${this.schema}".backend_control WHERE singleton=1 FOR UPDATE`);
         const row=control.rows[0];
         if(!row || row.backend!=='postgres' || row.generation!==this.generation || row.schema_version!==1)throw new StoreFenced();
@@ -302,9 +307,9 @@ export class PostgresStore implements RepositoryStore {
       const scoped=new PostgresStore(this.url,this.schema.slice('github_state_'.length),this.generation,client,this.diagnostics,connection);
       // Application exceptions must retain their meaning (for example an
       // expired staging page); only driver operations are sanitized.
-      connection.phase='apply';
+      enterPhase('apply');
       const result=await Promise.race([apply(scoped),lost]);
-      connection.phase='commit';
+      enterPhase('commit');
       const committed=await this.run(async()=>{
         connection.commitUncertain=true;
         try{const result=await client.query('COMMIT');connection.commitUncertain=false;return result;}
@@ -312,22 +317,27 @@ export class PostgresStore implements RepositoryStore {
       },connection);
       if(committed.command!=='COMMIT'){connection.reason='commit_rejected';connection.code='25P02';throw new StoreUnavailable('25P02');}failed=false;return result;
     }catch(error){
+      finishPhase();
       if(error instanceof StoreFenced)connection.reason='fenced';else connection.reason??='application';
-      if(!connection.closed && !connection.error){let timer:ReturnType<typeof setTimeout>|undefined;try{
+      if(!connection.closed && !connection.error){const rollbackStarted=Date.now();let timer:ReturnType<typeof setTimeout>|undefined;try{
         await Promise.race([client.query('ROLLBACK'),new Promise<void>(resolve=>{timer=setTimeout(()=>{connection.cleanup='rollback_timeout';fail('08006','rollback_timeout');resolve();},2000);})]);
-      }catch{connection.cleanup='rollback_error';fail();}finally{if(timer)clearTimeout(timer);}}
+      }catch{connection.cleanup='rollback_error';fail();}finally{if(timer)clearTimeout(timer);rollback_ms=Date.now()-rollbackStarted;}}
       throw error;
     }finally{
-      connection.ending=true;
+      finishPhase();
+      connection.ending=true;const closing=Date.now();
       if(!connection.closed && connection.error){try{client.neonConfig.destroy();}catch{}}
       else if(!connection.closed){let timer:ReturnType<typeof setTimeout>|undefined;try{
         await Promise.race([client.end(),new Promise<void>(resolve=>{timer=setTimeout(()=>{try{client.neonConfig.destroy();}catch{}finally{resolve();}},2000);})]);
       }catch{}finally{if(timer)clearTimeout(timer);}}
+      close_ms=Date.now()-closing;
+      const cleaning=Date.now();
       if(connection.error && connection.ownerAttempted && connection.session){
-        this.discarded.push({...connection.session,discardedAt:Date.now()});session_cleanup=await this.cleanupDiscarded();
+        this.discarded.push({...connection.session,discardedAt:Date.now(),transaction_id});session_cleanup=await this.cleanupDiscarded(transaction_id);
       }
+      cleanup_ms=Date.now()-cleaning;
       const transaction_ms=Date.now()-started;
-      if(failed || session_cleanup || wait_ms+transaction_ms>=250)storeLog('repository_postgres_transaction',{phase:connection.phase,code:connection.code ?? null,reason:connection.reason ?? null,cleanup:connection.cleanup ?? null,admission_cleanup:pendingCleanup ?? null,session_cleanup:session_cleanup ?? null,outcome:failed?(connection.commitUncertain?'unknown':'failed'):'committed',wait_ms,transaction_ms,failed,connection_discarded:Boolean(connection.error)});
+      if(failed || session_cleanup || wait_ms+transaction_ms>=250)storeLog('repository_postgres_transaction',{phase:connection.phase,code:connection.code ?? null,reason:connection.reason ?? null,cleanup:connection.cleanup ?? null,admission_cleanup:pendingCleanup ?? null,session_cleanup:session_cleanup ?? null,outcome:failed?(connection.commitUncertain?'unknown':'failed'):'committed',transaction_id,admission_started_at,admission_cleanup_ms,transaction_started_at:started,phase_ms,rollback_ms,close_ms,cleanup_ms,wait_ms,transaction_ms,failed,connection_discarded:Boolean(connection.error)});
     }
   }
   async prepareMonitoring(analyzeTables:boolean,attemptToken=Date.now()):Promise<any> {

@@ -155,17 +155,39 @@ export async function within<T>(work:Promise<T>,ms:number):Promise<T> {
   try {return await Promise.race([work,new Promise<T>((_,reject)=>{timer=setTimeout(()=>reject(new Error('monitoring I/O timeout')),ms);})]);}
   finally {if(timer!==undefined)clearTimeout(timer);}
 }
-export function timedBucket(bucket:R2Bucket):R2Bucket {
-  return new Proxy(bucket,{get(target,key){
+// A timeout bounds the caller's wait, not the R2 operation. Keep timed-out
+// work in its owner's budget until it actually settles. Repository maintenance
+// and transactional reads have separate owners. Stateless callers omit an owner
+// to keep the budget invocation-local instead of retaining canceled request I/O.
+const timedBuckets=new WeakMap<object,{buckets:WeakMap<R2Bucket,R2Bucket>,pending:number}>();
+const MAX_TIMED_BUCKET_IO=16;
+const BODY_READS=new Set<PropertyKey>(['text','json','arrayBuffer','blob','bytes']);
+export function timedBucket(bucket:R2Bucket,owner?:object):R2Bucket {
+  let budget=owner?timedBuckets.get(owner):undefined;
+  if(!budget){budget={buckets:new WeakMap(),pending:0};if(owner)timedBuckets.set(owner,budget);}
+  const capacity=budget,cache=budget.buckets;
+  const cached=cache.get(bucket);if(cached)return cached;
+  const cancelBody=async(object:any):Promise<void>=>{try{await object?.body?.cancel();}catch{/* A reader can own the stream; its pending operation retains its slot. */}};
+  const tracked=async<T>(work:()=>Promise<T>,late?:(value:T)=>Promise<void>,refused?:()=>void):Promise<T>=>{
+    if(capacity.pending>=MAX_TIMED_BUCKET_IO){refused?.();throw new Error('monitoring I/O busy');}
+    capacity.pending++;
+    let expired=false;
+    const completion=Promise.resolve().then(work).then(async result=>{if(expired&&late)await late(result);return result;}).finally(()=>{capacity.pending--;});
+    try{return await within(completion,1500);}catch(error){expired=true;throw error;}
+  };
+  const proxy=new Proxy(bucket,{get(target,key){
     const value=Reflect.get(target,key,target);
     if(typeof value!=='function')return value;
     return async(...args:any[])=>{
-      const result=await within(Promise.resolve(value.apply(target,args)),1500);
+      const result=await tracked(()=>Promise.resolve(value.apply(target,args)),key==='get'?cancelBody:undefined);
       if(key!=='get' || !result)return result;
       return new Proxy(result,{get(object,property){
         const member=Reflect.get(object,property,object);
-        return typeof member==='function'?(...params:any[])=>within(Promise.resolve(member.apply(object,params)),1500):member;
+        if(typeof member!=='function')return member;
+        if(!BODY_READS.has(property))return member.bind(object);
+        return (...params:any[])=>tracked(()=>Promise.resolve(member.apply(object,params)),undefined,()=>{void cancelBody(object);});
       }});
     };
   }});
+  cache.set(bucket,proxy);cache.set(proxy,proxy);return proxy;
 }
