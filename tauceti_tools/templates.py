@@ -372,15 +372,6 @@ def write_project(project: Project, checkout: Path, role: str = "content") -> li
             text = render((ASSETS / "downstream/api-docs.yml").read_text(), project)
         else:
             text = render(source.read_text(), project)
-        if relative.as_posix() in (".github/workflows/ci.yml", ".github/workflows/lint-full.yml") and not project.legacy:
-            # Downstreams build and audit their library. The shared harness's own
-            # regression fixtures belong to its source repository, not each clone.
-            import re
-            text = re.sub(r"(?ms)^  readiness-tests:.*?(?=^  build:)", "", text)
-            text = re.sub(
-                r"(?ms)^      - name: (?:Infrastructure policy unit tests|Lake archive reuse integration tests|Header audit equivalence tests)\n.*?(?=^      - |^  [a-z]|\Z)", "", text)
-            text = text.replace("needs: [build, duplicate-audit-tests]", "needs: [build]")
-            text = text.replace(" && needs['duplicate-audit-tests'].result == 'success'", "")
         if relative.name == "pr-status.yml" and not project.feature("zulip"):
             text = text.replace('args=(--since', 'args=(--labels-only --since')
             text = text.replace("Reconcile labels and Zulip posts", "Reconcile PR status labels")
