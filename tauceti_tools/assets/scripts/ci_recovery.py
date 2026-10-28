@@ -29,6 +29,16 @@ query($owner: String!, $name: String!, $after: String) {
 }
 """
 
+CURRENT = """
+query($owner: String!, $name: String!, $pr: Int!, $head: GitObjectID!) {
+  rateLimit { cost }
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $pr) { state isDraft headRefOid }
+    object(oid: $head) { ... on Commit { status { contexts { context } } } }
+  }
+}
+"""
+
 
 def timestamp(value):
     return dt.datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
@@ -75,15 +85,18 @@ def pr_numbers(run):
     return numbers
 
 
-def has_build(api, repo, head):
-    page = 1
-    while True:
-        result = api.request("GET", f"repos/{repo}/commits/{head}/status?per_page=100&page={page}")
-        if any(row["context"] == "build" for row in result["statuses"]):
-            return True
-        if page * 100 >= result["total_count"]:
-            return False
-        page += 1
+def still_missing(api, repo, number, head):
+    owner, name = repo.split("/")
+    data = api.graphql(CURRENT, dict(owner=owner, name=name, pr=number, head=head))["repository"]
+    pull, commit = data["pullRequest"], data["object"]
+    return bool(
+        pull
+        and commit
+        and pull["state"] == "OPEN"
+        and not pull["isDraft"]
+        and pull["headRefOid"] == head
+        and not any(row["context"] == "build" for row in (commit.get("status") or {}).get("contexts", []))
+    )
 
 
 def recover(api, repo, *, apply=False, limit=20, min_age=5400, now=None):
@@ -127,10 +140,7 @@ def recover(api, repo, *, apply=False, limit=20, min_age=5400, now=None):
                 continue
             # Recheck immediately before dispatch. Closed PRs, moved heads and
             # results arriving during the inventory must never trigger a retry.
-            current = api.request("GET", f"repos/{repo}/pulls/{number}")
-            if current["state"] != "open" or current["draft"] or current["head"]["sha"] != head:
-                continue
-            if has_build(api, repo, head):
+            if not still_missing(api, repo, number, head):
                 continue
             # Refresh active runs after the slower inventory/history reads. A
             # manual replacement can be on main's SHA, so a head-only query is insufficient.

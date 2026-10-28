@@ -51,6 +51,17 @@ class GitHub:
         self.writes = []
 
     def graphql(self, query, variables):
+        if query == recovery.CURRENT:
+            return dict(
+                repository=dict(
+                    pullRequest=dict(
+                        state=self.current["state"].upper(),
+                        isDraft=self.current["draft"],
+                        headRefOid=self.current["head"]["sha"],
+                    ),
+                    object=dict(status=dict(contexts=[dict(context="build")] if self.build else [])),
+                )
+            )
         pull = dict(
             number=1,
             headRefOid=HEAD,
